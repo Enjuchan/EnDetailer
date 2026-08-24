@@ -4,3 +4,7 @@ obj/
 .vs/
 .idea/
 *.zip
+
+# Arbeitsmaterial, bleibt lokal
+CLAUDE.md
+docs/
