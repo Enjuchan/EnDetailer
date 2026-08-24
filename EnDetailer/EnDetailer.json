@@ -1,0 +1,13 @@
+{
+    "Name": "EnDetailer",
+    "InternalName": "EnDetailer",
+    "Author": "Enjuchan",
+    "Punchline": "A DPS meter that shows what you are doing right now.",
+    "Description": "EnDetailer reads combat data from IINACT and shows the damage you are actually dealing, averaged over a rolling time window instead of the whole fight.\n\nUnlike the usual encounter average, the value drops when you stop attacking - so it tells you whether your rotation is running, not how the fight went overall.\n\nIt also keeps an encounter together across cutscenes, boss phases and downtime, and only resets when the next fight begins.\n\nRequires IINACT.",
+    "RepoUrl": "https://github.com/Enjuchan/EnDetailer",
+    "ApplicableVersion": "any",
+    "Tags": ["dps", "meter", "parser", "iinact", "combat"],
+    "CategoryTags": ["ui"],
+    "LoadPriority": 0,
+    "IconUrl": "https://raw.githubusercontent.com/Enjuchan/EnDetailer/main/EnDetailer/images/icon.png"
+}

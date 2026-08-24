@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="EnDetailer.Core.Tests/EnDetailer.Core.Tests.csproj" />
+  <Project Path="EnDetailer.Core/EnDetailer.Core.csproj" />
+  <Project Path="EnDetailer/EnDetailer.csproj" />
+</Solution>

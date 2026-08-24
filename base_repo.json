@@ -1,0 +1,25 @@
+[
+    {
+        "Author": "Enjuchan",
+        "Name": "EnDetailer",
+        "InternalName": "EnDetailer",
+        "Punchline": "A DPS meter that shows what you are doing right now.",
+        "Description": "Shows the damage you are actually dealing, averaged over a rolling time window instead of the whole fight, and keeps encounters together across cutscenes and downtime. Requires IINACT.",
+        "AssemblyVersion": "0.0.0.0",
+        "TestingAssemblyVersion": "0.0.0.0",
+        "RepoUrl": "https://github.com/Enjuchan/EnDetailer",
+        "ApplicableVersion": "any",
+        "DalamudApiLevel": 15,
+        "IsHide": false,
+        "IsTestingExclusive": false,
+        "LoadPriority": 0,
+        "Tags": ["dps", "meter", "parser", "iinact", "combat"],
+        "CategoryTags": ["ui"],
+        "DownloadCount": 0,
+        "LastUpdate": 0,
+        "DownloadLinkInstall": "https://github.com/Enjuchan/EnDetailer/releases/latest/download/EnDetailer.zip",
+        "DownloadLinkTesting": "https://github.com/Enjuchan/EnDetailer/releases/latest/download/EnDetailer.zip",
+        "DownloadLinkUpdate": "https://github.com/Enjuchan/EnDetailer/releases/latest/download/EnDetailer.zip",
+        "IconUrl": "https://raw.githubusercontent.com/Enjuchan/EnDetailer/main/EnDetailer/images/icon.png"
+    }
+]

@@ -1,0 +1,248 @@
+using System;
+using System.Linq;
+using Dalamud.Game.Command;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
+using EnDetailer.Core;
+
+namespace EnDetailer;
+
+public sealed class Plugin : IDalamudPlugin
+{
+    private const string CommandName = "/endetailer";
+
+    private readonly ICommandManager commandManager;
+    private readonly IDalamudPluginInterface pluginInterface;
+    private readonly IPluginLog log;
+    private readonly IFramework framework;
+    private readonly IPlayerState playerState;
+    private readonly IChatGui chatGui;
+
+    private readonly IinactSource source;
+    private readonly GameConditions conditions;
+    private readonly EncounterTracker encounters;
+    private readonly RollingDpsTracker rolling = new();
+    private readonly MeterWindow window;
+
+    private readonly Configuration config;
+    private readonly ConfigWindow configWindow;
+
+    private CombatSnapshot? lastSnapshot;
+    private DateTime lastConnectAttempt = DateTime.MinValue;
+    private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(5);
+
+    public Plugin(
+        IDalamudPluginInterface pluginInterface,
+        ICommandManager commandManager,
+        IPluginLog log,
+        IFramework framework,
+        ICondition condition,
+        IClientState clientState,
+        IPlayerState playerState,
+        IChatGui chatGui,
+        ITextureProvider textures)
+    {
+        this.pluginInterface = pluginInterface;
+        this.commandManager = commandManager;
+        this.log = log;
+        this.framework = framework;
+        this.playerState = playerState;
+        this.chatGui = chatGui;
+
+        this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        this.config.Initialize(pluginInterface);
+
+        this.conditions = new GameConditions(condition, clientState);
+        this.encounters = new EncounterTracker(this.conditions)
+        {
+            GracePeriod = TimeSpan.FromSeconds(this.config.GraceSeconds),
+            ResetOnZoneChange = this.config.ResetOnZoneChange
+        };
+
+        this.configWindow = new ConfigWindow(this.config, this.encounters);
+        this.window = new MeterWindow(this.config, textures, pluginInterface.UiBuilder);
+        this.window.OpenConfigRequested = OpenConfig;
+        this.encounters.EncounterStarted +=
+            () => this.rolling.MarkEncounterStart(this.encounters.StartedAt ?? DateTime.UtcNow);
+        this.encounters.EncounterStarted += () => this.window.ResetSmoothing();
+        this.encounters.EncounterEnded += OnEncounterEnded;
+
+        this.source = new IinactSource(pluginInterface, log);
+        this.source.SnapshotReceived += OnSnapshot;
+
+        // Kein Verbindungsversuch im Konstruktor: Beim Spielstart laden alle
+        // Plugins gleichzeitig, und IINACT ist dann meist noch nicht bereit.
+        // Der Framework-Puls versucht es, bis es klappt.
+
+        this.commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+        {
+            HelpMessage = "Toggles the EnDetailer window. Use \'config\' or \'lock\' as arguments."
+        });
+
+        this.framework.Update += OnFrameworkUpdate;
+        this.pluginInterface.UiBuilder.Draw += this.window.Draw;
+        this.pluginInterface.UiBuilder.Draw += this.configWindow.Draw;
+        this.pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
+        this.pluginInterface.UiBuilder.OpenMainUi += OpenMain;
+        this.log.Information("EnDetailer loaded.");
+    }
+
+    private void OnCommand(string command, string args)
+    {
+        var arg = args.Trim();
+
+        if (arg.Equals("config", StringComparison.OrdinalIgnoreCase))
+        {
+            OpenConfig();
+            return;
+        }
+
+        if (arg.Equals("lock", StringComparison.OrdinalIgnoreCase))
+        {
+            this.config.Locked = !this.config.Locked;
+            this.config.Save();
+            return;
+        }
+
+        this.window.Visible = !this.window.Visible;
+    }
+
+    private void OpenConfig() => this.configWindow.Visible = true;
+
+    /// <summary>
+    /// Wird vom Plugin-Installer ausgeloest. Dalamud erwartet diesen Rueckruf fuer
+    /// das Hauptfenster und bemaengelt sein Fehlen bei der Pruefung.
+    /// </summary>
+    private void OpenMain() => this.window.Visible = true;
+
+    /// <summary>
+    /// Schliesst IINACTs Encounter mit ab, sobald wir den Kampf fuer beendet
+    /// halten. Sonst laeuft dessen Encounter endlos weiter, und Werte wie Crit
+    /// und Direct Hit bezoegen sich auf einen ganz anderen Zeitraum als unsere.
+    /// Feuert je Kampf genau einmal, weil der Uebergang nach Ended nur einmal
+    /// stattfindet.
+    /// </summary>
+    private void OnEncounterEnded()
+    {
+        if (!this.config.EndIinactEncounter)
+            return;
+
+        this.source.EndEncounter(this.chatGui);
+        this.log.Information("Encounter ended, IINACT closed as well.");
+    }
+
+    /// <summary>
+    /// Der Puls aus dem Spiel. Unverzichtbar: IINACT schweigt ausserhalb des
+    /// Kampfes, und genau dann muss die Karenzzeit ablaufen koennen.
+    /// </summary>
+    private void OnFrameworkUpdate(IFramework _)
+    {
+        var now = DateTime.UtcNow;
+
+        // Solange keine Verbindung steht, in Ruhe weiter versuchen. Ohne das
+        // bleibt das Plugin nach einem Spielstart dauerhaft stumm, weil IINACT
+        // beim ersten Versuch noch nicht antwortet.
+        if (!this.source.IsConnected && now - this.lastConnectAttempt >= ConnectRetryDelay)
+        {
+            this.lastConnectAttempt = now;
+            this.source.Start();
+        }
+
+        this.encounters.Tick(now);
+        this.window.Connected = this.source.IsConnected;
+        this.window.LocalPlayerName = this.source.LocalPlayerName;
+
+        // Zwischen den Datenpaketen weiterrechnen, damit der Verlauf stetig bleibt.
+        if (this.encounters.State == EncounterState.Running && this.lastSnapshot is { } snapshot)
+            UpdateRows(snapshot, now);
+
+        // Nur hier darf der Spielzustand gelesen werden, deshalb den Namen von
+        // hier aus durchreichen statt im IPC-Callback abzufragen.
+        this.source.LocalPlayerName = this.playerState.IsLoaded ? this.playerState.CharacterName : null;
+
+        this.window.Frozen = this.encounters.State == EncounterState.Ended;
+
+        // Die Dauer laeuft weiter, auch wenn IINACT gerade nichts sendet.
+        if (this.encounters.State == EncounterState.Running)
+            this.window.HeaderDuration = this.encounters.Duration.ToString(@"mm\:ss");
+    }
+
+    private void OnSnapshot(CombatSnapshot snapshot)
+    {
+        var total = snapshot.Combatants.Sum(c => c.TotalDamage);
+
+        // Reihenfolge ist wesentlich: Update kann einen neuen Kampf ausloesen und
+        // setzt dann den Nullpunkt auf den zuletzt bekannten Stand. Erst danach
+        // darf der neue Wert eingetragen werden, sonst faellt der erste Treffer
+        // des Kampfes unter den Tisch.
+        this.encounters.Update(total, snapshot.At);
+
+        // Auch ausserhalb des Kampfes mitschreiben: IINACT zaehlt seinen Encounter
+        // weiter, und nur so kennen wir beim naechsten Kampfbeginn den Nullpunkt.
+        foreach (var c in snapshot.Combatants)
+            this.rolling.Record(c.Name, c.TotalDamage, snapshot.At);
+
+        // Nach Kampfende bleibt die Anzeige stehen, bis der naechste Kampf beginnt.
+        if (this.encounters.State != EncounterState.Running)
+            return;
+
+        this.lastSnapshot = snapshot;
+        UpdateRows(snapshot, snapshot.At);
+    }
+
+    /// <summary>
+    /// Baut die Anzeigezeilen. Laeuft nicht nur beim Eintreffen neuer Daten, sondern
+    /// jeden Frame: Das gleitende Fenster wandert staendig weiter, der Wert aendert
+    /// sich also auch zwischen zwei Datenpaketen. Nur einmal je Sekunde gerechnet
+    /// steht die Anzeige dazwischen still und springt dann.
+    /// </summary>
+    private void UpdateRows(CombatSnapshot snapshot, DateTime now)
+    {
+        var start = this.encounters.StartedAt ?? snapshot.At;
+        var window = TimeSpan.FromSeconds(this.config.RollingWindowSeconds);
+
+        double CurrentDps(string name) => this.config.DpsMethod == DpsMethod.Weighted
+            ? this.rolling.GetWeightedDps(name, now, window)
+            : this.rolling.GetRollingDps(name, now, window, start);
+
+
+        // Den Encounter-DPS selbst rechnen statt IINACTs Wert zu uebernehmen:
+        // dessen Encounter kann laenger laufen als unserer, dann bezoege sich die
+        // Spalte auf einen anderen Zeitraum als Total und aktueller DPS.
+        // Als Nenner dient die Zeit bis zum letzten Treffer, nicht die Wanduhr -
+        // sonst druecken Karenzzeit und Nachlauf den Wert unter das, was LMeter
+        // und FFLogs zeigen.
+        var seconds = Math.Max(1, this.encounters.ActiveDuration.TotalSeconds);
+
+        this.window.SetRows(snapshot.Combatants.Select(c => new MeterRow(
+            c.Name,
+            c.Job,
+            this.rolling.GetTotalDamage(c.Name),
+            CurrentDps(c.Name),
+            this.rolling.GetTotalDamage(c.Name) / seconds,
+            c.CritPercent,
+            c.DirectHitPercent)).ToList());
+
+        this.window.HeaderTitle = snapshot.Title;
+        this.window.HeaderDuration = this.encounters.Duration.ToString(@"mm\:ss");
+        this.window.Deaths = snapshot.Combatants.Sum(c => c.Deaths);
+
+        // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
+        // und Summe nie Verschiedenes meinen.
+        this.window.TotalDps = this.window.Mode == DpsMode.Rolling
+            ? snapshot.Combatants.Sum(c => CurrentDps(c.Name))
+            : snapshot.Combatants.Sum(c => this.rolling.GetTotalDamage(c.Name)) / seconds;
+    }
+
+    public void Dispose()
+    {
+        this.framework.Update -= OnFrameworkUpdate;
+        this.pluginInterface.UiBuilder.Draw -= this.window.Draw;
+        this.pluginInterface.UiBuilder.Draw -= this.configWindow.Draw;
+        this.pluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
+        this.pluginInterface.UiBuilder.OpenMainUi -= OpenMain;
+        this.commandManager.RemoveHandler(CommandName);
+        this.source.SnapshotReceived -= OnSnapshot;
+        this.source.Dispose();
+    }
+}
