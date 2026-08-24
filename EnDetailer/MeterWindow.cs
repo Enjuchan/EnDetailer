@@ -453,11 +453,14 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         {
             var row = ordered[index];
 
-            var barEndX = BarEndX(row, barColumn, peak);
             var barColor = JobColors.Bar(row.Job, config.BarAlpha);
             var isSelf = this.LocalPlayerName is { } me && row.Name == me;
 
             ImGui.TableNextRow();
+
+            // Erst in der ersten Zelle bekannt: Vor TableNextRow steht der Cursor noch
+            // am Ende der vorigen Zeile, der Balken begaenne dann viel zu weit rechts.
+            var barEndX = float.MinValue;
 
             for (var i = 0; i < columns.Length; i++)
             {
@@ -473,7 +476,10 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
                     this.rowRightEdge = x + ImGui.GetContentRegionAvail().X;
 
                 if (i == 0)
+                {
                     DrawRowBackground(index, isSelf);
+                    barEndX = BarEndX(row, barColumn, peak);
+                }
 
                 DrawBarSegment(barEndX, barColor, row.Job, first: i == 0, last: isLast);
 

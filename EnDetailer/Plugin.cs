@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
 
     private CombatSnapshot? lastSnapshot;
+    private MeterMetric renderedMetric = MeterMetric.Damage;
     private DateTime lastConnectAttempt = DateTime.MinValue;
     private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(5);
 
@@ -73,6 +74,7 @@ public sealed class Plugin : IDalamudPlugin
         };
         this.encounters.EncounterStarted += () => this.window.ResetSmoothing();
         this.encounters.EncounterEnded += OnEncounterEnded;
+        this.encounters.EncounterEnded += RebuildFrozenRows;
 
         this.source = new IinactSource(pluginInterface, log);
         this.source.SnapshotReceived += OnSnapshot;
@@ -159,19 +161,54 @@ public sealed class Plugin : IDalamudPlugin
         this.window.Connected = this.source.IsConnected;
         this.window.LocalPlayerName = this.source.LocalPlayerName;
 
-        // Zwischen den Datenpaketen weiterrechnen, damit der Verlauf stetig bleibt.
-        if (this.encounters.State == EncounterState.Running && this.lastSnapshot is { } snapshot)
-            UpdateRows(snapshot, now);
-
         // Nur hier darf der Spielzustand gelesen werden, deshalb den Namen von
         // hier aus durchreichen statt im IPC-Callback abzufragen.
         this.source.LocalPlayerName = this.playerState.IsLoaded ? this.playerState.CharacterName : null;
 
         this.window.Frozen = this.encounters.State == EncounterState.Ended;
 
-        // Die Dauer laeuft weiter, auch wenn IINACT gerade nichts sendet.
         if (this.encounters.State == EncounterState.Running)
-            this.window.HeaderDuration = this.encounters.Duration.ToString(@"mm\:ss");
+        {
+            // Zwischen den Datenpaketen weiterrechnen, damit der Verlauf stetig bleibt.
+            this.renderedMetric = this.window.Metric;
+
+            if (this.lastSnapshot is { } snapshot)
+                UpdateRows(snapshot, now);
+        }
+        else if (this.window.Metric != this.renderedMetric)
+        {
+            // Nach Kampfende stehen die Zahlen still - beim Wechsel der Metrik muessen
+            // sie aber einmal neu gebaut werden, sonst zeigt die Tabelle weiter die
+            // Werte der Metrik, die beim Einfrieren aktiv war.
+            RebuildFrozenRows();
+        }
+
+        // Waehrend des Kampfes laeuft die Wanduhr, auch wenn IINACT gerade nichts
+        // sendet. Beim Einfrieren wird auf die Zeit bis zum letzten Treffer
+        // korrigiert - so macht es ACT auch, und nur so passt die angezeigte Zeit
+        // zum Encounter-DPS, der ohnehin damit rechnet. Sonst stuende dort eine
+        // Dauer, die die Karenzzeit mitzaehlt, und die Rechnung ginge nicht auf.
+        this.window.HeaderDuration = this.encounters.State == EncounterState.Running
+            ? this.encounters.Duration.ToString(@"mm\:ss")
+            : this.encounters.ActiveDuration.ToString(@"mm\:ss");
+    }
+
+    /// <summary>
+    /// Baut die eingefrorenen Zeilen neu auf - zum Zeitpunkt des letzten Treffers,
+    /// nicht zu dem des Kampfendes.
+    ///
+    /// Dazwischen liegt die Karenzzeit, und in der sinkt der gleitende Wert bereits
+    /// ab, weil kein Schaden mehr eintrifft. Wer nach dem Kampf auf die Anzeige
+    /// schaut, will aber wissen, wo er zuletzt stand, und nicht, wie weit der Wert
+    /// waehrend des Wartens schon gefallen war. Dieselbe Ueberlegung wie bei der Uhr.
+    /// </summary>
+    private void RebuildFrozenRows()
+    {
+        if (this.lastSnapshot is not { } frozen)
+            return;
+
+        this.renderedMetric = this.window.Metric;
+        UpdateRows(frozen, this.encounters.LastDamageAt ?? frozen.At);
     }
 
     private void OnSnapshot(CombatSnapshot snapshot)
@@ -245,7 +282,6 @@ public sealed class Plugin : IDalamudPlugin
             c.OverhealPercent)).ToList());
 
         this.window.HeaderTitle = snapshot.Title;
-        this.window.HeaderDuration = this.encounters.Duration.ToString(@"mm\:ss");
         this.window.Deaths = snapshot.Combatants.Sum(c => c.Deaths);
 
         // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
