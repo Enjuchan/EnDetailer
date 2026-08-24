@@ -1,9 +1,9 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
     <PropertyGroup>
         <AssemblyName>EnDetailer</AssemblyName>
-        <AssemblyVersion>0.1.0.0</AssemblyVersion>
-        <FileVersion>0.1.0.0</FileVersion>
-        <InformationalVersion>0.1.0.0</InformationalVersion>
+        <AssemblyVersion>0.1.1.0</AssemblyVersion>
+        <FileVersion>0.1.1.0</FileVersion>
+        <InformationalVersion>0.1.1.0</InformationalVersion>
         <Nullable>enable</Nullable>
     </PropertyGroup>
     <ItemGroup>
