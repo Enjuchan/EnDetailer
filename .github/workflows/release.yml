@@ -51,22 +51,3 @@ jobs:
           files: ./EnDetailer.zip
           name: EnDetailer ${{ github.ref_name }}
           generate_release_notes: true
-
-      - name: Update repo.json
-        shell: pwsh
-        run: |
-          $version = '${{ github.ref_name }}'
-          $content = Get-Content -Path ./base_repo.json -Raw
-          $content = $content -replace '0\.0\.0\.0', $version
-          Set-Content -Path ./repo.json -Value $content -NoNewline
-
-      - name: Commit repo.json
-        shell: pwsh
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          git add repo.json
-          git commit -m "Update repo.json for ${{ github.ref_name }}" || exit 0
-          git push origin main
