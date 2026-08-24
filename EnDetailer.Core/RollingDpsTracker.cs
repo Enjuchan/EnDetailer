@@ -42,6 +42,18 @@ public sealed class RollingDpsTracker
     /// <summary>Zeitpunkt des Kampfbeginns, als Startpunkt jeder Zeitreihe.</summary>
     private DateTime encounterStartedAt;
 
+    /// <summary>
+    /// Abstand des Nullpunkts vom Kampfbeginn.
+    ///
+    /// Kampfbeginn und erster Messpunkt tragen denselben Zeitstempel - das Plugin
+    /// meldet beides aus demselben Datenpaket. Laege der Nullpunkt genau darauf,
+    /// waere der Abstand null und es liesse sich keine Rate bilden: Die Anzeige
+    /// bliebe beim ersten Treffer jedes Kampfes leer. Der Schaden dieses Ticks ist
+    /// ohnehin im Intervall davor entstanden, also gehoert der Nullpunkt dorthin.
+    /// Eine Sekunde entspricht dem Sendetakt von IINACT.
+    /// </summary>
+    private static readonly TimeSpan ZeroPointLead = TimeSpan.FromSeconds(1);
+
 
     public void Record(string name, double cumulativeDamage, DateTime at)
     {
@@ -50,11 +62,15 @@ public sealed class RollingDpsTracker
             s = new Series();
             this.series[name] = s;
 
-            // Ein Nullpunkt zum Kampfbeginn. Ohne ihn hat die Reihe nach dem ersten
-            // Treffer nur einen einzigen Messpunkt - daraus laesst sich keine Rate
-            // bilden, und die Zeile bliebe beim ersten Schlag jedes Kampfes leer.
-            if (this.encounterStarted && at > this.encounterStartedAt)
-                s.Samples.Add((this.encounterStartedAt, 0));
+            // Ein Nullpunkt vor dem Kampfbeginn. Ohne ihn hat die Reihe nach dem
+            // ersten Treffer nur einen einzigen Messpunkt - daraus laesst sich keine
+            // Rate bilden, und die Zeile bliebe beim ersten Schlag leer.
+            if (this.encounterStarted)
+            {
+                var zero = this.encounterStartedAt - ZeroPointLead;
+                if (at > zero)
+                    s.Samples.Add((zero, 0));
+            }
         }
 
         // Faellt der kumulative Wert zurueck, hat IINACT den Encounter geschnitten.
@@ -98,8 +114,13 @@ public sealed class RollingDpsTracker
         // Fensterlaenge, damit er ohne Schaden auf null sinkt.
         var elapsed = now - encounterStart;
         var divisor = elapsed < window ? elapsed : window;
-        if (divisor <= TimeSpan.Zero)
-            return 0;
+
+        // Beim ersten Datenpaket eines Kampfes ist keine Zeit verstrichen: Beginn
+        // und Messpunkt tragen denselben Zeitstempel. Ohne Untergrenze waere der
+        // Nenner null und der Wert bliebe leer. Der Schaden ist im Intervall davor
+        // entstanden, also wird mindestens dieses gerechnet.
+        if (divisor < ZeroPointLead)
+            divisor = ZeroPointLead;
 
         return damageInWindow / divisor.TotalSeconds;
     }
@@ -220,7 +241,7 @@ public sealed class RollingDpsTracker
         {
             s.Origin = s.HasSample ? s.Cumulative : null;
             s.Samples.Clear();
-            s.Samples.Add((at, 0));
+            s.Samples.Add((at - ZeroPointLead, 0));
         }
     }
 
