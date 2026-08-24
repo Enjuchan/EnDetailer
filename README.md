@@ -87,4 +87,8 @@ what makes the encounter and DPS logic testable without the game running.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+GNU AGPL-3.0 — see [LICENSE](LICENSE).
+
+In short: use it, change it, share it. If you distribute a modified version, that
+version has to stay open source under the same licence. The point is to keep the code
+available to everyone rather than to restrict what you do with it.

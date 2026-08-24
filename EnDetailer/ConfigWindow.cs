@@ -322,6 +322,14 @@ public sealed class ConfigWindow(Configuration config, EncounterTracker encounte
         ImGui.TextDisabled("after leaving combat' - EnDetailer decides");
         ImGui.TextDisabled("that on its own.");
 
+        ImGui.Separator();
+
+        // Die AGPL sieht fuer interaktive Programme einen sichtbaren Hinweis auf
+        // Urheberschaft, fehlende Gewaehrleistung und Lizenz vor.
+        ImGui.TextDisabled("EnDetailer - Copyright (c) 2026 Enjuchan");
+        ImGui.TextDisabled("Licensed under GNU AGPL-3.0, without any warranty.");
+        ImGui.TextDisabled("github.com/Enjuchan/EnDetailer");
+
         ImGui.End();
     }
 }
