@@ -116,6 +116,10 @@ public sealed class IinactSource : IDisposable
                         EncounterDps: ParseNumber(c["encdps"]?.ToString()),
                         CritPercent: ParsePercent(c["crithit%"]?.ToString()),
                         DirectHitPercent: ParsePercent(c["DirectHitPct"]?.ToString()),
+                        TotalHealing: ParseNumber(c["healed"]?.ToString()),
+                        EncounterHps: ParseNumber(c["enchps"]?.ToString()),
+                        OverhealPercent: ParsePercent(c["OverHealPct"]?.ToString()),
+                        TotalDamageTaken: ParseNumber(c["damagetaken"]?.ToString()),
                         Deaths: (int)ParseNumber(c["deaths"]?.ToString())));
                 }
             }

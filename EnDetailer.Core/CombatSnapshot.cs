@@ -10,6 +10,10 @@ public sealed record CombatantSnapshot(
     double EncounterDps,
     double CritPercent,
     double DirectHitPercent,
+    double TotalHealing,
+    double EncounterHps,
+    double OverhealPercent,
+    double TotalDamageTaken,
     int Deaths);
 
 public sealed record CombatSnapshot(

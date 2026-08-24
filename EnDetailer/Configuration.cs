@@ -119,6 +119,13 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Abwechselnd leicht abgesetzte Zeilen.</summary>
     public bool RowStripes { get; set; } = true;
 
+    /// <summary>
+    /// Ob das Rechtsklick-Menue schon einmal geoeffnet wurde. Solange nicht, steht ein
+    /// Hinweis darauf in der Fusszeile - versteckte Bedienung, die niemand findet, ist
+    /// keine Bedienung.
+    /// </summary>
+    public bool ContextMenuFound { get; set; }
+
     /// <summary>Blendet gemessene Werte in der Fusszeile ein. Nur zur Fehlersuche.</summary>
     public bool ShowDiagnostics { get; set; }
 

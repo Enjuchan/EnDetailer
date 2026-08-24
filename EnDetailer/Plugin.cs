@@ -21,7 +21,9 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IinactSource source;
     private readonly GameConditions conditions;
     private readonly EncounterTracker encounters;
-    private readonly RollingDpsTracker rolling = new();
+    private readonly RollingDpsTracker rollingDamage = new();
+    private readonly RollingDpsTracker rollingHealing = new();
+    private readonly RollingDpsTracker rollingTaken = new();
     private readonly MeterWindow window;
 
     private readonly Configuration config;
@@ -62,8 +64,13 @@ public sealed class Plugin : IDalamudPlugin
         this.configWindow = new ConfigWindow(this.config, this.encounters);
         this.window = new MeterWindow(this.config, textures, pluginInterface.UiBuilder);
         this.window.OpenConfigRequested = OpenConfig;
-        this.encounters.EncounterStarted +=
-            () => this.rolling.MarkEncounterStart(this.encounters.StartedAt ?? DateTime.UtcNow);
+        this.encounters.EncounterStarted += () =>
+        {
+            var at = this.encounters.StartedAt ?? DateTime.UtcNow;
+            this.rollingDamage.MarkEncounterStart(at);
+            this.rollingHealing.MarkEncounterStart(at);
+            this.rollingTaken.MarkEncounterStart(at);
+        };
         this.encounters.EncounterStarted += () => this.window.ResetSmoothing();
         this.encounters.EncounterEnded += OnEncounterEnded;
 
@@ -180,7 +187,11 @@ public sealed class Plugin : IDalamudPlugin
         // Auch ausserhalb des Kampfes mitschreiben: IINACT zaehlt seinen Encounter
         // weiter, und nur so kennen wir beim naechsten Kampfbeginn den Nullpunkt.
         foreach (var c in snapshot.Combatants)
-            this.rolling.Record(c.Name, c.TotalDamage, snapshot.At);
+        {
+            this.rollingDamage.Record(c.Name, c.TotalDamage, snapshot.At);
+            this.rollingHealing.Record(c.Name, c.TotalHealing, snapshot.At);
+            this.rollingTaken.Record(c.Name, c.TotalDamageTaken, snapshot.At);
+        }
 
         // Nach Kampfende bleibt die Anzeige stehen, bis der naechste Kampf beginnt.
         if (this.encounters.State != EncounterState.Running)
@@ -201,9 +212,18 @@ public sealed class Plugin : IDalamudPlugin
         var start = this.encounters.StartedAt ?? snapshot.At;
         var window = TimeSpan.FromSeconds(this.config.RollingWindowSeconds);
 
-        double CurrentDps(string name) => this.config.DpsMethod == DpsMethod.Weighted
-            ? this.rolling.GetWeightedDps(name, now, window)
-            : this.rolling.GetRollingDps(name, now, window, start);
+        // Welcher Verlauf gilt, haengt an der Metrik; wie daraus eine Rate wird,
+        // an der eingestellten Methode. Beides ist voneinander unabhaengig.
+        var tracker = this.window.Metric switch
+        {
+            MeterMetric.Healing => this.rollingHealing,
+            MeterMetric.DamageTaken => this.rollingTaken,
+            _ => this.rollingDamage
+        };
+
+        double CurrentRate(string name) => this.config.DpsMethod == DpsMethod.Weighted
+            ? tracker.GetWeightedDps(name, now, window)
+            : tracker.GetRollingDps(name, now, window, start);
 
 
         // Den Encounter-DPS selbst rechnen statt IINACTs Wert zu uebernehmen:
@@ -217,11 +237,12 @@ public sealed class Plugin : IDalamudPlugin
         this.window.SetRows(snapshot.Combatants.Select(c => new MeterRow(
             c.Name,
             c.Job,
-            this.rolling.GetTotalDamage(c.Name),
-            CurrentDps(c.Name),
-            this.rolling.GetTotalDamage(c.Name) / seconds,
+            tracker.GetTotalDamage(c.Name),
+            CurrentRate(c.Name),
+            tracker.GetTotalDamage(c.Name) / seconds,
             c.CritPercent,
-            c.DirectHitPercent)).ToList());
+            c.DirectHitPercent,
+            c.OverhealPercent)).ToList());
 
         this.window.HeaderTitle = snapshot.Title;
         this.window.HeaderDuration = this.encounters.Duration.ToString(@"mm\:ss");
@@ -230,8 +251,8 @@ public sealed class Plugin : IDalamudPlugin
         // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
         // und Summe nie Verschiedenes meinen.
         this.window.TotalDps = this.window.Mode == DpsMode.Rolling
-            ? snapshot.Combatants.Sum(c => CurrentDps(c.Name))
-            : snapshot.Combatants.Sum(c => this.rolling.GetTotalDamage(c.Name)) / seconds;
+            ? snapshot.Combatants.Sum(c => CurrentRate(c.Name))
+            : snapshot.Combatants.Sum(c => tracker.GetTotalDamage(c.Name)) / seconds;
     }
 
     public void Dispose()

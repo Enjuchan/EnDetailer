@@ -57,6 +57,20 @@ as well, so only one plugin cuts encounters.
 - Job colours and icons, own row highlighted, adjustable transparency, accent colour,
   lockable click-through window
 
+## Using it
+
+**Right-click anywhere in the window** for the menu: switch between damage, healing and
+damage taken, and choose whether the rate is averaged over the last few seconds or the
+whole encounter. Which one is active is always visible in the last column header — DPS,
+HPS or DTPS.
+
+**Click a column header** to sort by it, click again to reverse. The bar length follows
+whatever you sorted by.
+
+The gear icon opens the settings. If you lock the window it becomes click-through, which
+means the right-click menu is unavailable until you unlock it again — `/endetailer lock`
+toggles that.
+
 ## Commands
 
 | Command | Effect |

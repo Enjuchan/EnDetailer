@@ -57,6 +57,9 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
     public bool Frozen;
     public bool Connected;
 
+    /// <summary>Was gemessen wird. Bestimmt Spalten, Beschriftungen und Datenquelle.</summary>
+    public MeterMetric Metric = MeterMetric.Damage;
+
     /// <summary>Name des eigenen Charakters, fuer die Hervorhebung der eigenen Zeile.</summary>
     public string? LocalPlayerName;
 
@@ -73,10 +76,59 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
 
     private double ValueFor(MeterRow r, uint column) => column switch
     {
-        ColumnTotal => r.TotalDamage,
-        ColumnCrit => r.CritPercent,
+        ColumnTotal => r.Total,
+        ColumnCrit => this.Metric == MeterMetric.Healing ? r.OverhealPercent : r.CritPercent,
         ColumnDirectHit => r.DirectHitPercent,
-        _ => this.Mode == DpsMode.Rolling ? r.RollingDps : r.EncounterDps
+        _ => this.Mode == DpsMode.Rolling ? r.RollingRate : r.EncounterRate
+    };
+
+    /// <summary>
+    /// CRIT und Direct Hit beziehen sich bei IINACT auf ausgeteilten Schaden. Bei
+    /// Heilung waeren sie irrefuehrend, dort steht stattdessen Overheal; bei
+    /// erlittenem Schaden gibt es nichts Sinnvolles, dann entfallen sie ganz.
+    /// </summary>
+    private (string Label, bool Show)[] ExtraColumns => this.Metric switch
+    {
+        MeterMetric.Healing => [("Over", true), (string.Empty, false)],
+        MeterMetric.DamageTaken => [(string.Empty, false), (string.Empty, false)],
+        _ => [("CRIT", true), ("DH", true)]
+    };
+
+    private string MetricLabel => this.Metric switch
+    {
+        MeterMetric.Healing => "Healing",
+        MeterMetric.DamageTaken => "Damage taken",
+        _ => "Damage"
+    };
+
+    /// <summary>
+    /// Beim Wechsel der Metrik aendern sich die Groessenordnungen voellig - der
+    /// Nachlauf wuerde sonst sekundenlang von Millionen Schaden zu ein paar tausend
+    /// Heilung kriechen. Deshalb zuruecksetzen.
+    /// </summary>
+    private void SetMetric(MeterMetric metric)
+    {
+        if (metric == this.Metric)
+            return;
+
+        this.Metric = metric;
+        ResetSmoothing();
+
+        // Nach DPS sortiert bleibt nach dem Wechsel sinnvoll; eine Sortierung nach
+        // CRIT dagegen zeigt bei Heilung auf Overheal und bei erlittenem Schaden ins
+        // Leere. In dem Fall auf die Ratenspalte zurueckfallen.
+        if (this.sortColumn == ColumnDirectHit && metric != MeterMetric.Damage)
+            this.sortColumn = ColumnDps;
+
+        if (this.sortColumn == ColumnCrit && metric == MeterMetric.DamageTaken)
+            this.sortColumn = ColumnDps;
+    }
+
+    private string RateLabel => this.Metric switch
+    {
+        MeterMetric.Healing => "HPS",
+        MeterMetric.DamageTaken => "DTPS",
+        _ => "DPS"
     };
 
     public void Draw()
@@ -129,6 +181,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         DrawHeader();
         DrawTable();
         DrawFooter();
+        DrawContextMenu();
 
         ImGui.PopStyleColor();
         ImGui.SetWindowFontScale(1f);
@@ -185,14 +238,8 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
 
         // Im gesperrten Zustand ist das Dropdown ohnehin nicht bedienbar, dann
         // steht dort nur, welche Groesse gerade angezeigt wird.
-        var label = this.Mode == DpsMode.Rolling ? "DPS (current)" : "DPS (encounter)";
-
         if (config.Locked)
-        {
-            ImGui.SameLine(ImGui.GetContentRegionAvail().X - 100);
-            ImGui.TextDisabled(label);
             return;
-        }
 
         // Zahnrad ganz rechts, in Dalamuds Symbolschrift. ImGui laesst keine eigenen
         // Knoepfe in der Titelleiste zu, deshalb sitzt es in der ersten Inhaltszeile.
@@ -202,7 +249,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         using (uiBuilder.IconFontHandle.Push())
             gearWidth = ImGui.CalcTextSize(gear).X + ImGui.GetStyle().FramePadding.X * 2;
 
-        ImGui.SameLine(ImGui.GetContentRegionAvail().X - gearWidth);
+        ImGui.SameLine(Math.Max(0, ImGui.GetContentRegionAvail().X - gearWidth));
 
         using (uiBuilder.IconFontHandle.Push())
         {
@@ -211,21 +258,48 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Settings");
+            ImGui.SetTooltip("Settings  (right-click anywhere for more)");
+    }
 
-        // Deutlicher Abstand zum Zahnrad, sonst wirken beide wie ein Element.
-        const float modeWidth = 130f;
-        ImGui.SameLine(ImGui.GetContentRegionAvail().X - modeWidth - gearWidth - 12f);
-        ImGui.SetNextItemWidth(modeWidth);
+    /// <summary>
+    /// Rechtsklick-Menue. Metrik und Zeitbasis braucht man selten; dauerhaft sichtbar
+    /// fressen sie aber die halbe Kopfzeile und draengen den Bossnamen heraus. Welche
+    /// Metrik laeuft, steht ohnehin in der Spaltenueberschrift.
+    /// </summary>
+    private void DrawContextMenu()
+    {
+        if (!ImGui.BeginPopupContextWindow("##menu"))
+            return;
 
-        if (ImGui.BeginCombo("##dpsmode", label))
+        if (!config.ContextMenuFound)
         {
-            if (ImGui.Selectable("DPS (current)", this.Mode == DpsMode.Rolling))
-                this.Mode = DpsMode.Rolling;
-            if (ImGui.Selectable("DPS (encounter)", this.Mode == DpsMode.Encounter))
-                this.Mode = DpsMode.Encounter;
-            ImGui.EndCombo();
+            config.ContextMenuFound = true;
+            config.Save();
         }
+
+        ImGui.TextDisabled("Measure");
+
+        if (ImGui.MenuItem("Damage", string.Empty, this.Metric == MeterMetric.Damage))
+            SetMetric(MeterMetric.Damage);
+        if (ImGui.MenuItem("Healing", string.Empty, this.Metric == MeterMetric.Healing))
+            SetMetric(MeterMetric.Healing);
+        if (ImGui.MenuItem("Damage taken", string.Empty, this.Metric == MeterMetric.DamageTaken))
+            SetMetric(MeterMetric.DamageTaken);
+
+        ImGui.Separator();
+        ImGui.TextDisabled("Averaged over");
+
+        if (ImGui.MenuItem("The last few seconds", string.Empty, this.Mode == DpsMode.Rolling))
+            this.Mode = DpsMode.Rolling;
+        if (ImGui.MenuItem("The whole encounter", string.Empty, this.Mode == DpsMode.Encounter))
+            this.Mode = DpsMode.Encounter;
+
+        ImGui.Separator();
+
+        if (ImGui.MenuItem("Settings..."))
+            this.OpenConfigRequested?.Invoke();
+
+        ImGui.EndPopup();
     }
 
     /// <summary>Feine Linie unter der Kopfzeile, in der Akzentfarbe.</summary>
@@ -256,7 +330,9 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
 
         var height = -ImGui.GetTextLineHeightWithSpacing() * 1.4f;
 
-        if (!ImGui.BeginTable("##endetailer", 5, flags, new Vector2(0, height), 0))
+        var columns = Columns();
+
+        if (!ImGui.BeginTable("##endetailer", columns.Length, flags, new Vector2(0, height), 0))
             return;
 
         // Die Zahlenspalten bekommen genau so viel Platz, wie Ueberschrift plus
@@ -269,11 +345,13 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         // Der Name nimmt den Rest, die Zahlenspalten liegen fest rechts. Andersherum
         // - eine dehnbare Zahlenspalte - loest sich vom Rest: sie schnappt sich den
         // ganzen Restplatz und bewegt sich beim Verkleinern nicht mit den anderen.
-        ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0, ColumnName);
-        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.WidthFixed, Width("Total"), ColumnTotal);
-        ImGui.TableSetupColumn("CRIT", ImGuiTableColumnFlags.WidthFixed, Width("CRIT"), ColumnCrit);
-        ImGui.TableSetupColumn("DH", ImGuiTableColumnFlags.WidthFixed, Width("DH") + 8, ColumnDirectHit);
-        ImGui.TableSetupColumn("DPS", ImGuiTableColumnFlags.WidthFixed, Width("DPS") + 8, ColumnDps);
+        foreach (var (id, label) in columns)
+        {
+            if (id == ColumnName)
+                ImGui.TableSetupColumn(label, ImGuiTableColumnFlags.WidthStretch, 0, id);
+            else
+                ImGui.TableSetupColumn(label, ImGuiTableColumnFlags.WidthFixed, Width(label) + 8, id);
+        }
         ImGui.TableSetupScrollFreeze(0, 1);
         DrawHeaderRow();
         DrawRows();
@@ -281,14 +359,23 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         ImGui.EndTable();
     }
 
-    private static readonly (uint Id, string Label)[] Columns =
-    [
-        (ColumnName, "Name"),
-        (ColumnTotal, "Total"),
-        (ColumnCrit, "CRIT"),
-        (ColumnDirectHit, "DH"),
-        (ColumnDps, "DPS")
-    ];
+    private (uint Id, string Label)[] Columns()
+    {
+        var extra = ExtraColumns;
+        var list = new List<(uint, string)>
+        {
+            (ColumnName, "Name"),
+            (ColumnTotal, "Total")
+        };
+
+        if (extra[0].Show)
+            list.Add((ColumnCrit, extra[0].Label));
+        if (extra[1].Show)
+            list.Add((ColumnDirectHit, extra[1].Label));
+
+        list.Add((ColumnDps, RateLabel));
+        return [.. list];
+    }
 
     /// <summary>
     /// Eigene Kopfzeile statt TableHeadersRow. Deren Beschriftung sitzt immer links
@@ -300,9 +387,12 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
 
-        foreach (var (id, label) in Columns)
+        var columns = Columns();
+
+        for (var i = 0; i < columns.Length; i++)
         {
-            ImGui.TableSetColumnIndex((int)id);
+            var (id, label) = columns[i];
+            ImGui.TableSetColumnIndex(i);
 
             var text = id == this.sortColumn
                 ? label + (this.sortAscending ? " ^" : " v")
@@ -357,46 +447,45 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         // wird - bei Namenssortierung nach der DPS-Spalte, sonst waere sie sinnlos.
         var barColumn = this.sortColumn == ColumnName ? ColumnDps : this.sortColumn;
         var peak = ordered.Count > 0 ? Math.Max(1, ordered.Max(r => ValueFor(r, barColumn))) : 1;
+        var columns = Columns();
 
         for (var index = 0; index < ordered.Count; index++)
         {
             var row = ordered[index];
 
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-
-            this.columnStartX[0] = ImGui.GetCursorScreenPos().X;
-
             var barEndX = BarEndX(row, barColumn, peak);
             var barColor = JobColors.Bar(row.Job, config.BarAlpha);
             var isSelf = this.LocalPlayerName is { } me && row.Name == me;
 
-            DrawRowBackground(index, isSelf);
-            DrawBarSegment(barEndX, barColor, row.Job, first: true);
-            DrawJobIcon(row.Job);
-            Text(row.Name);
+            ImGui.TableNextRow();
 
-            ImGui.TableNextColumn();
-            this.columnStartX[1] = ImGui.GetCursorScreenPos().X;
-            DrawBarSegment(barEndX, barColor, row.Job);
-            Centered(Format(SmoothValue(row.Name + "|total", row.TotalDamage)));
+            for (var i = 0; i < columns.Length; i++)
+            {
+                var (id, _) = columns[i];
+                ImGui.TableNextColumn();
 
-            ImGui.TableNextColumn();
-            this.columnStartX[2] = ImGui.GetCursorScreenPos().X;
-            DrawBarSegment(barEndX, barColor, row.Job);
-            Centered($"{row.CritPercent:0}%");
+                var x = ImGui.GetCursorScreenPos().X;
+                if (i < this.columnStartX.Length)
+                    this.columnStartX[i] = x;
 
-            ImGui.TableNextColumn();
-            this.columnStartX[3] = ImGui.GetCursorScreenPos().X;
-            DrawBarSegment(barEndX, barColor, row.Job);
-            Centered($"{row.DirectHitPercent:0}%");
+                var isLast = i == columns.Length - 1;
+                if (isLast)
+                    this.rowRightEdge = x + ImGui.GetContentRegionAvail().X;
 
-            ImGui.TableNextColumn();
-            this.columnStartX[4] = ImGui.GetCursorScreenPos().X;
-            this.rowRightEdge = this.columnStartX[4] + ImGui.GetContentRegionAvail().X;
-            DrawBarSegment(barEndX, barColor, row.Job, last: true);
-            var dps = this.Mode == DpsMode.Rolling ? row.RollingDps : row.EncounterDps;
-            Centered(Format(SmoothValue(row.Name + "|dps", dps)));
+                if (i == 0)
+                    DrawRowBackground(index, isSelf);
+
+                DrawBarSegment(barEndX, barColor, row.Job, first: i == 0, last: isLast);
+
+                if (id == ColumnName)
+                {
+                    DrawJobIcon(row.Job);
+                    Text(row.Name);
+                    continue;
+                }
+
+                Centered(CellText(row, id));
+            }
         }
     }
 
@@ -492,7 +581,10 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         {
             BarExtent.NameOnly => this.columnStartX[1],
             BarExtent.FullRow => this.rowRightEdge,
-            _ => this.columnStartX[2]
+
+            // "bis Total" heisst: bis zum Beginn der uebernaechsten Spalte. Bei
+            // Metriken mit weniger Spalten gibt es die unter Umstaenden nicht.
+            _ => this.columnStartX[2] > this.columnStartX[1] ? this.columnStartX[2] : this.rowRightEdge
         };
 
         // Im allerersten Frame ist noch nichts vermessen.
@@ -599,6 +691,28 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
     }
 
     /// <summary>
+    /// Was in einer Zelle steht. Prozentspalten bekommen ihr Zeichen, Zahlen laufen
+    /// durch die Glaettung - jede mit eigenem Schluessel, damit Total und Rate
+    /// derselben Zeile unabhaengig voneinander nachziehen.
+    /// </summary>
+    private string CellText(MeterRow row, uint column)
+    {
+        if (column == ColumnCrit)
+            return this.Metric == MeterMetric.Healing
+                ? $"{row.OverhealPercent:0}%"
+                : $"{row.CritPercent:0}%";
+
+        if (column == ColumnDirectHit)
+            return $"{row.DirectHitPercent:0}%";
+
+        if (column == ColumnTotal)
+            return Format(SmoothValue(row.Name + "|total", row.Total));
+
+        var rate = this.Mode == DpsMode.Rolling ? row.RollingRate : row.EncounterRate;
+        return Format(SmoothValue(row.Name + "|rate", rate));
+    }
+
+    /// <summary>
     /// Rechtsbuendig in der Zelle, auf derselben Kante wie die Ueberschrift.
     /// GetColumnWidth taugt zum Ausmessen nicht - es stammt aus der alten
     /// Spalten-API und liefert in Tabellen falsche Breiten.
@@ -670,9 +784,16 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures,
         ImGui.PopStyleColor();
 
         ImGui.SameLine(0, 5);
-        ImGui.TextUnformatted($"DPS {label}");
+        ImGui.TextUnformatted($"{RateLabel} {label}");
         ImGui.SameLine(0, 12);
         ImGui.TextDisabled($"Deaths: {this.Deaths}");
+
+        // Verschwindet, sobald das Menue einmal benutzt wurde.
+        if (config.ContextMenuFound || config.Locked)
+            return;
+
+        ImGui.SameLine(0, 12);
+        ImGui.TextDisabled("— right-click for damage / healing / taken");
     }
 
     /// <summary>
