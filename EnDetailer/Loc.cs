@@ -1,7 +1,3 @@
-using System.Numerics;
-using Dalamud.Bindings.ImGui;
-using Dalamud.Interface;
-using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 
 namespace EnDetailer;
@@ -16,7 +12,7 @@ public readonly record struct LocText(string En, string De)
 
 /// <summary>
 /// Sprache des Plugins. Ohne gespeicherte Wahl folgt sie der Sprache von Dalamud (Deutsch bei "de", sonst Englisch),
-/// auch bei späteren Wechseln; wer über den Knopf in der Titelleiste umschaltet, behält die eigene Wahl.
+/// auch bei späteren Wechseln; wer über den Schalter im Kopfband umschaltet, behält die eigene Wahl.
 /// </summary>
 public static class Loc
 {
@@ -52,22 +48,14 @@ public static class Loc
         Changed = null;
     }
 
-    /// <summary>Knopf für die Titelleiste: Klick wechselt die Sprache und gibt die Wahl ("de" oder "en") an <paramref name="save"/>.</summary>
-    public static TitleBarButton CreateButton(Action<string> save) => new()
+    /// <summary>Wechselt die Sprache und gibt die Wahl ("de" oder "en") an <paramref name="save"/>; behält sie ab dann gegenüber Dalamud.</summary>
+    public static void Toggle(Action<string> save)
     {
-        Icon = FontAwesomeIcon.Language,
-        IconOffset = new Vector2(2, 1),
-        ShowTooltip = () => ImGui.SetTooltip(Current == Language.German
-            ? "Sprache: Deutsch. Klick wechselt zu Englisch."
-            : "Language: English. Click to switch to German."),
-        Click = _ =>
-        {
-            followsDalamud = false;
-            var next = Current == Language.German ? Language.English : Language.German;
-            Set(next);
-            save(Code(next));
-        },
-    };
+        followsDalamud = false;
+        var next = Current == Language.German ? Language.English : Language.German;
+        Set(next);
+        save(Code(next));
+    }
 
     private static void OnDalamudLanguageChanged(string code)
     {

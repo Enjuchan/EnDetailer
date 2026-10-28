@@ -19,10 +19,12 @@ public sealed record AboutInfo(
     string Copyright,
     IReadOnlyList<AboutLink> Links);
 
-/// <summary>Inhalt des About-Tabs: Name und Beschreibung, Befehle, Lizenz mit Link-Knöpfen.</summary>
+/// <summary>Inhalt des About-Tabs: Name und Beschreibung mit Knöpfen für Willkommen und Changelog, Befehle, Lizenz mit Link-Knöpfen.</summary>
 public static class AboutView
 {
-    public static void Draw(AboutInfo info)
+    /// <param name="openWelcome">Öffnet das Willkommensfenster erneut.</param>
+    /// <param name="openChangelog">Öffnet das Changelog-Fenster erneut.</param>
+    public static void Draw(AboutInfo info, Action openWelcome, Action openChangelog)
     {
         Widgets.SectionHeader(Loc.T("About", "Info"));
         Widgets.Card("about", width =>
@@ -34,6 +36,13 @@ public static class AboutView
             ImGui.PushTextWrapPos(ImGui.GetCursorScreenPos().X + width);
             ImGui.TextUnformatted(info.Description.ToString());
             ImGui.PopTextWrapPos();
+
+            ImGui.Spacing();
+            if (ActionButton("welcome", Loc.T("Welcome", "Willkommen"), FontAwesomeIcon.HandSparkles, null))
+                openWelcome();
+            ImGui.SameLine();
+            if (ActionButton("changelog", "Changelog", FontAwesomeIcon.ListUl, null))
+                openChangelog();
         });
 
         ImGui.Dummy(new Vector2(0, 4));
@@ -61,7 +70,7 @@ public static class AboutView
                 if (i > 0)
                     ImGui.SameLine();
 
-                if (LinkButton(i, info.Links[i]))
+                if (ActionButton($"link{i}", info.Links[i].Label.ToString(), info.Links[i].Icon, info.Links[i].Url))
                     Dalamud.Utility.Util.OpenLink(info.Links[i].Url);
             }
         });
@@ -77,25 +86,24 @@ public static class AboutView
         ImGui.SetCursorScreenPos(next);
     }
 
-    /// <summary>Umrandeter Knopf mit Icon und Beschriftung; der Tooltip zeigt die Adresse.</summary>
-    private static bool LinkButton(int index, AboutLink link)
+    /// <summary>Umrandeter Knopf mit Icon und Beschriftung; <paramref name="tooltip"/> ist bei Link-Knöpfen die Adresse.</summary>
+    private static bool ActionButton(string id, string label, FontAwesomeIcon icon, string? tooltip)
     {
         var draw = ImGui.GetWindowDrawList();
         var pos = ImGui.GetCursorScreenPos();
-        var iconText = link.Icon.ToIconString();
+        var iconText = icon.ToIconString();
 
         ImGui.PushFont(UiBuilder.IconFont);
         var iconSize = ImGui.CalcTextSize(iconText);
         ImGui.PopFont();
 
-        var label = link.Label.ToString();
         var textSize = ImGui.CalcTextSize(label);
         var size = new Vector2(iconSize.X + textSize.X + 30, ImGui.GetFrameHeight());
 
-        var clicked = ImGui.InvisibleButton($"##link{index}", size);
+        var clicked = ImGui.InvisibleButton($"##{id}", size);
         var hovered = ImGui.IsItemHovered();
-        if (hovered)
-            ImGui.SetTooltip(link.Url);
+        if (hovered && tooltip is not null)
+            ImGui.SetTooltip(tooltip);
 
         if (hovered)
             draw.AddRectFilled(pos, pos + size, Theme.U32(Theme.Hover), Theme.Rounding);

@@ -81,6 +81,56 @@ public static class Widgets
     /// <summary>Breite einer Markierung, zum rechtsbündigen Ausrichten.</summary>
     public static float PillWidth(string text, bool withDot) => ImGui.CalcTextSize(text).X + 18 + (withDot ? 11f : 0f);
 
+    /// <summary>
+    /// Sprachschalter als anklickbare Markierung mit Language-Icon und Kürzel der aktuellen Sprache; ein Klick wechselt
+    /// die Sprache. Steht ganz rechts im Kopfband, bei jedem Plugin an derselben Stelle.
+    /// </summary>
+    /// <param name="save">Speichert die gewählte Sprache ("de" oder "en").</param>
+    public static void LanguagePill(Action<string> save)
+    {
+        var draw = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var german = Loc.Current == Language.German;
+        var code = german ? "DE" : "EN";
+        var iconText = FontAwesomeIcon.Language.ToIconString();
+
+        ImGui.PushFont(UiBuilder.IconFont);
+        var iconSize = ImGui.CalcTextSize(iconText);
+        ImGui.PopFont();
+
+        var textSize = ImGui.CalcTextSize(code);
+        var size = new Vector2(LanguagePillWidth(), textSize.Y + 6);
+
+        var clicked = ImGui.InvisibleButton("##language", size);
+        var hovered = ImGui.IsItemHovered();
+
+        if (hovered)
+            draw.AddRectFilled(pos, pos + size, Theme.U32(Theme.Hover), size.Y / 2);
+        draw.AddRect(pos, pos + size, Theme.U32(hovered ? Theme.AccentLight : Theme.Border), size.Y / 2, ImDrawFlags.None, 1f);
+
+        ImGui.PushFont(UiBuilder.IconFont);
+        draw.AddText(new Vector2(pos.X + 10, pos.Y + (size.Y - iconSize.Y) / 2), Theme.U32(Theme.AccentLight), iconText);
+        ImGui.PopFont();
+        draw.AddText(new Vector2(pos.X + 16 + iconSize.X, pos.Y + 3), Theme.U32(hovered ? Theme.Text : Theme.Muted), code);
+
+        if (hovered)
+            ImGui.SetTooltip(german
+                ? "Sprache: Deutsch. Klick wechselt zu Englisch."
+                : "Language: English. Click to switch to German.");
+
+        if (clicked)
+            Loc.Toggle(save);
+    }
+
+    /// <summary>Breite des <see cref="LanguagePill"/>, zum rechtsbündigen Ausrichten.</summary>
+    public static float LanguagePillWidth()
+    {
+        ImGui.PushFont(UiBuilder.IconFont);
+        var iconWidth = ImGui.CalcTextSize(FontAwesomeIcon.Language.ToIconString()).X;
+        ImGui.PopFont();
+        return iconWidth + ImGui.CalcTextSize("DE").X + 26;
+    }
+
     /// <summary>Schalter statt Checkbox. Gibt zurück, ob sich der Wert geändert hat.</summary>
     public static bool Toggle(string id, ref bool value)
     {

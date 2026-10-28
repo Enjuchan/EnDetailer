@@ -92,6 +92,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Gewählte Sprache ("de" oder "en"); null heißt wie Dalamud.</summary>
     public string? Language { get; set; }
 
+    /// <summary>Die zuletzt gesehene Plugin-Version, als Text; leer vor dem ersten Willkommens- oder Changelog-Fenster. Getrennt von <see cref="Version"/>, das Migrationen zählt.</summary>
+    public string? LastSeenVersion { get; set; }
+
     private IDalamudPluginInterface? pluginInterface;
 
     public void Initialize(IDalamudPluginInterface pi)

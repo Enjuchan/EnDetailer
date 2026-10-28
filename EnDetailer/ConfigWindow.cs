@@ -30,8 +30,6 @@ public sealed class ConfigWindow : Window
         (FontAwesomeIcon.InfoCircle, "Info")
     ];
 
-    private static readonly DpsMode[] DpsModes = [DpsMode.Rolling, DpsMode.Encounter];
-    private static readonly ShowMode[] ShowModes = [ShowMode.Always, ShowMode.InCombat, ShowMode.InDuty];
     private static readonly TextStyle[] TextStyles = [TextStyle.Shadow, TextStyle.Outline, TextStyle.Plain];
     private static readonly BarExtent[] BarExtents = [BarExtent.NameOnly, BarExtent.ThroughTotal, BarExtent.FullRow];
 
@@ -45,6 +43,8 @@ public sealed class ConfigWindow : Window
     private readonly Dependencies dependencies;
     private readonly AboutInfo about;
     private readonly Func<bool> iinactConnected;
+    private readonly Action openWelcome;
+    private readonly Action openChangelog;
     private readonly FrameTiming timing;
 
     private Theme.Scope? themeScope;
@@ -60,7 +60,9 @@ public sealed class ConfigWindow : Window
         Dependencies dependencies,
         AboutInfo about,
         IPluginLog log,
-        Func<bool> iinactConnected)
+        Func<bool> iinactConnected,
+        Action openWelcome,
+        Action openChangelog)
         // Der Name bleibt "EnDetailer Settings", damit gespeicherte Fensterlage und -größe erhalten bleiben.
         : base("EnDetailer Settings")
     {
@@ -69,18 +71,14 @@ public sealed class ConfigWindow : Window
         this.dependencies = dependencies;
         this.about = about;
         this.iinactConnected = iinactConnected;
+        this.openWelcome = openWelcome;
+        this.openChangelog = openChangelog;
         this.timing = new FrameTiming(log, "Settings draw", TimeSpan.FromSeconds(5), () => config.ShowDiagnostics);
 
         // Das Fenster war bisher ein einfaches ImGui-Fenster ohne Escape-Schließen, Töne und Einblenden.
         RespectCloseHotkey = false;
         DisableWindowSounds = true;
         DisableFadeInFadeOut = true;
-
-        TitleBarButtons.Add(Loc.CreateButton(code =>
-        {
-            config.Language = code;
-            config.Save();
-        }));
     }
 
     public override void PreDraw()
@@ -126,7 +124,7 @@ public sealed class ConfigWindow : Window
                 DependenciesView.Draw(this.dependencies);
                 break;
             default:
-                AboutView.Draw(this.about);
+                AboutView.Draw(this.about, this.openWelcome, this.openChangelog);
                 break;
         }
     }
@@ -152,7 +150,8 @@ public sealed class ConfigWindow : Window
         var gap = ImGui.GetStyle().ItemSpacing.X;
 
         var iinactWidth = Widgets.PillWidth(IinactName, true);
-        var total = iinactWidth;
+        var languageWidth = Widgets.LanguagePillWidth();
+        var total = iinactWidth + gap + languageWidth;
         if (this.Preview)
             total += gap + Widgets.PillWidth(previewName, false);
 
@@ -180,6 +179,13 @@ public sealed class ConfigWindow : Window
             Widgets.Pill(previewName, Theme.Accent, Theme.AccentLight);
         }
 
+        ImGui.SetCursorScreenPos(new Vector2(right - languageWidth, y));
+        Widgets.LanguagePill(code =>
+        {
+            this.config.Language = code;
+            this.config.Save();
+        });
+
         ImGui.SetCursorScreenPos(new Vector2(start.X, start.Y + height + 10));
         ImGui.Dummy(Vector2.Zero);
     }
@@ -189,14 +195,7 @@ public sealed class ConfigWindow : Window
         Widgets.SectionHeader(Loc.T("Calculation", "Berechnung"));
         Widgets.Card("calculation", width =>
         {
-            var mode = this.config.Mode;
-            if (SegmentedRow(Loc.T("Display mode", "Anzeigemodus"), "##mode", DpsModes, ModeLabel, ref mode, width, 180,
-                    Loc.T("Now follows your current damage over the reaction time.\nFight averages over the whole encounter.\nAlso in the meter's right-click menu.",
-                          "Jetzt folgt deinem aktuellen Schaden über die Reaktionszeit.\nKampf mittelt über den ganzen Kampf.\nAuch im Rechtsklick-Menü des Meters.")))
-            {
-                this.config.Mode = mode;
-                this.config.Save();
-            }
+            SettingsControls.DisplayModeRow(this.config, width);
 
             var reaction = this.config.ReactionSeconds;
             if (SliderIntRow(Loc.T("Reaction time", "Reaktionszeit"), ref reaction, ReactionTime.MinSeconds, ReactionTime.MaxSeconds, "%d s", width,
@@ -264,12 +263,7 @@ public sealed class ConfigWindow : Window
         Widgets.SectionHeader(Loc.T("Visibility", "Sichtbarkeit"));
         Widgets.Card("visibility", width =>
         {
-            var show = this.config.ShowMode;
-            if (SegmentedRow(Loc.T("Show meter", "Meter zeigen"), "##show", ShowModes, ShowLabel, ref show, width, 300))
-            {
-                this.config.ShowMode = show;
-                this.config.Save();
-            }
+            SettingsControls.ShowModeRow(this.config, width);
 
             if (this.config.ShowMode == ShowMode.InCombat)
             {
@@ -288,20 +282,7 @@ public sealed class ConfigWindow : Window
                 this.config.Save();
             }
 
-            var locked = this.config.Locked;
-            if (Widgets.ToggleRow(Loc.T("Lock window", "Fenster sperren"), ref locked, width,
-                    Loc.T("Locked: fixed in place and click-through.\n" +
-                          "In combat you hit the boss instead of the window.\n" +
-                          "Unlock again to sort or move it.\n" +
-                          "Also toggles with /endetailer lock.",
-                          "Gesperrt: fest und klickdurchlässig.\n" +
-                          "Im Kampf triffst du den Boss statt des Fensters.\n" +
-                          "Entsperre es wieder, um zu sortieren oder zu verschieben.\n" +
-                          "Schaltet auch mit /endetailer lock um.")))
-            {
-                this.config.Locked = locked;
-                this.config.Save();
-            }
+            SettingsControls.LockRow(this.config, width);
         });
 
         ImGui.Dummy(new Vector2(0, 4));
@@ -338,7 +319,7 @@ public sealed class ConfigWindow : Window
 
             ImGui.TableNextColumn();
             var style = this.config.TextStyle;
-            if (SegmentedRow(Loc.T("Text style", "Textstil"), "##style", TextStyles, StyleLabel, ref style, CellWidth(), 170))
+            if (SettingsControls.SegmentedRow(Loc.T("Text style", "Textstil"), "##style", TextStyles, StyleLabel, ref style, CellWidth(), 170))
             {
                 this.config.TextStyle = style;
                 this.config.Save();
@@ -346,7 +327,7 @@ public sealed class ConfigWindow : Window
 
             ImGui.TableNextColumn();
             var extent = this.config.BarExtent;
-            if (SegmentedRow(Loc.T("Bar length", "Balkenlänge"), "##extent", BarExtents, ExtentLabel, ref extent, CellWidth(), 170,
+            if (SettingsControls.SegmentedRow(Loc.T("Bar length", "Balkenlänge"), "##extent", BarExtents, ExtentLabel, ref extent, CellWidth(), 170,
                     Loc.T("Name: bar behind the name only.\nTotal: through the Total column.\nRow: across the whole row.",
                           "Name: Balken nur hinter dem Namen.\nSumme: bis zur Spalte Summe.\nZeile: über die ganze Zeile.")))
             {
@@ -414,15 +395,6 @@ public sealed class ConfigWindow : Window
 
     private static float CellWidth() => ImGui.GetContentRegionAvail().X;
 
-    private static string ModeLabel(DpsMode mode) => mode == DpsMode.Rolling ? Loc.T("Now", "Jetzt") : Loc.T("Fight", "Kampf");
-
-    private static string ShowLabel(ShowMode mode) => mode switch
-    {
-        ShowMode.Always => Loc.T("Always", "Immer"),
-        ShowMode.InCombat => Loc.T("In combat", "Im Kampf"),
-        _ => Loc.T("In duty", "In Instanz")
-    };
-
     private static string StyleLabel(TextStyle style) => style switch
     {
         TextStyle.Shadow => Loc.T("Shadow", "Schatten"),
@@ -437,36 +409,9 @@ public sealed class ConfigWindow : Window
         _ => Loc.T("Row", "Zeile")
     };
 
-    private static float ControlWidth(float rowWidth, float wanted) => Math.Min(wanted * ImGuiHelpers.GlobalScale, rowWidth * 0.6f);
-
     /// <summary>Breite des Reglers: wie gewünscht, aber nie über die Beschriftung links hinweg.</summary>
     private static float SliderWidth(float rowWidth, float labelWidth) =>
-        Math.Max(80 * ImGuiHelpers.GlobalScale, Math.Min(ControlWidth(rowWidth, 220), rowWidth - labelWidth - 12));
-
-    /// <summary>Beschriftung links, Umschaltleiste rechtsbuendig. Bildschirmkoordinaten, weil SameLine in Tabellenspalten spaltenbezogen ist.</summary>
-    private static bool SegmentedRow<T>(string label, string id, T[] values, Func<T, string> text, ref T selected, float width, float wanted, string? tooltip = null)
-        where T : struct, Enum
-    {
-        var start = ImGui.GetCursorScreenPos();
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted(label);
-        var hovered = ImGui.IsItemHovered();
-
-        // Längere deutsche Texte bekommen so viel Platz, wie jedes Feld braucht.
-        var widest = 0f;
-        foreach (var value in values)
-            widest = Math.Max(widest, ImGui.CalcTextSize(text(value)).X);
-
-        var control = Math.Min(Math.Max(ControlWidth(width, wanted), (widest + 16) * values.Length), width * 0.8f);
-        ImGui.SetCursorScreenPos(new Vector2(start.X + width - control, start.Y));
-        var changed = Widgets.Segmented(id, values, text, ref selected, control);
-        hovered |= ImGui.IsItemHovered();
-
-        if (tooltip is not null && hovered)
-            ImGui.SetTooltip(tooltip);
-
-        return changed;
-    }
+        Math.Max(80 * ImGuiHelpers.GlobalScale, Math.Min(SettingsControls.ControlWidth(rowWidth, 220), rowWidth - labelWidth - 12));
 
     private static bool SliderIntRow(string label, ref int value, int min, int max, string format, float width, string? tooltip = null)
     {

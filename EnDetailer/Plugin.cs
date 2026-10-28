@@ -34,6 +34,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly Configuration config;
     private readonly ConfigWindow configWindow;
+    private WelcomeWindow welcomeWindow = null!;
+    private ChangelogWindow changelogWindow = null!;
+    private readonly Welcome welcome;
     private readonly WindowSystem windows = new("EnDetailer");
 
     private readonly MeterVisibility visibility;
@@ -89,7 +92,9 @@ public sealed class Plugin : IDalamudPlugin
         // ECommons braucht das für DalamudReflector, das der Dependencies-Tab zum Installieren nutzt.
         ECommons.ECommonsMain.Init(pluginInterface, this);
 
-        this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        // Null heißt: Dalamud hatte nie eine Konfiguration dieses Plugins, also eine Neuinstallation.
+        var savedConfig = pluginInterface.GetPluginConfig();
+        this.config = savedConfig as Configuration ?? new Configuration();
         Loc.Init(pluginInterface, this.config.Language);
         this.config.Initialize(pluginInterface);
         Widgets.Init(textures);
@@ -105,14 +110,34 @@ public sealed class Plugin : IDalamudPlugin
         };
 
         var version = pluginInterface.Manifest.AssemblyVersion.ToString(3);
+        var dependencies = new Dependencies(pluginInterface, log, EnDetailerDependencies.Groups);
         this.configWindow = new ConfigWindow(
             this.config,
             this.encounters,
-            new Dependencies(pluginInterface, log, EnDetailerDependencies.Groups),
+            dependencies,
             EnDetailerAbout.Create(version),
             log,
-            () => this.source?.IsConnected ?? false);
+            () => this.source?.IsConnected ?? false,
+            () => this.welcomeWindow.IsOpen = true,
+            () => this.changelogWindow.IsOpen = true);
         this.windows.AddWindow(this.configWindow);
+
+        var saveLanguage = new Action<string>(code =>
+        {
+            this.config.Language = code;
+            this.config.Save();
+        });
+        this.welcome = new Welcome(clientState, pluginInterface.Manifest.AssemblyVersion.ToString(), savedConfig is not null,
+            this.config.LastSeenVersion, seen =>
+            {
+                this.config.LastSeenVersion = seen;
+                this.config.Save();
+            });
+        this.changelogWindow = new ChangelogWindow("EnDetailer", EnDetailerChangelog.Entries, this.welcome.IsNew, saveLanguage);
+        this.welcomeWindow = new WelcomeWindow(EnDetailerWelcome.Create(version, this.config), dependencies,
+            OpenConfig, () => this.changelogWindow.IsOpen = true, saveLanguage);
+        this.windows.AddWindow(this.welcomeWindow);
+        this.windows.AddWindow(this.changelogWindow);
         this.window = new MeterWindow(this.config, textures);
         this.window.OpenConfigRequested = OpenConfig;
         this.window.OlderRequested = this.history.GoOlder;
@@ -147,6 +172,8 @@ public sealed class Plugin : IDalamudPlugin
         this.pluginInterface.UiBuilder.Draw += Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi += OpenMain;
+        this.welcome.Start(() => this.welcomeWindow.IsOpen = true, () => this.changelogWindow.IsOpen = true);
+
         this.log.Information("EnDetailer loaded.");
     }
 
@@ -612,6 +639,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        this.welcome.Dispose();
         Loc.Changed -= RegisterCommand;
         Loc.Changed -= OnLanguageChanged;
         Loc.Dispose();
