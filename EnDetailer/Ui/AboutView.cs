@@ -33,7 +33,7 @@ public static class AboutView
             ImGui.SameLine();
             ImGui.TextColored(Theme.Muted, info.Version);
 
-            ImGui.PushTextWrapPos(ImGui.GetCursorScreenPos().X + width);
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
             ImGui.TextUnformatted(info.Description.ToString());
             ImGui.PopTextWrapPos();
 
