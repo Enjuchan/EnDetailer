@@ -1,10 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Utility;
-using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
 using EnDetailer.Core;
 using EnDetailer.Ui;
 
@@ -13,20 +14,16 @@ namespace EnDetailer;
 public sealed class ConfigWindow(
     Configuration config,
     EncounterTracker encounters,
-    IDalamudPluginInterface pluginInterface,
+    Dependencies dependencies,
+    AboutInfo about,
+    IPluginLog log,
     Func<bool> iinactConnected)
 {
-    private enum IinactInstall
-    {
-        NotInstalled,
-        Disabled,
-        Loaded
-    }
-
     private static readonly (FontAwesomeIcon Icon, string Label)[] Tabs =
     [
         (FontAwesomeIcon.Calculator, "Meter"),
         (FontAwesomeIcon.Eye, "Display"),
+        (FontAwesomeIcon.PuzzlePiece, "Dependencies"),
         (FontAwesomeIcon.InfoCircle, "About")
     ];
 
@@ -39,7 +36,8 @@ public sealed class ConfigWindow(
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? string.Empty;
 
     private const string IinactName = "IINACT";
-    private const long InstallCheckMs = 1000;
+
+    private readonly FrameTiming timing = new(log, "Settings draw", TimeSpan.FromSeconds(5), () => config.ShowDiagnostics);
 
     public bool Visible;
 
@@ -47,14 +45,19 @@ public sealed class ConfigWindow(
     public bool Preview;
 
     private int tab;
-    private IinactInstall iinactInstall;
-    private long nextInstallCheck;
 
     public void Draw()
     {
         if (!this.Visible)
             return;
 
+        var started = Stopwatch.GetTimestamp();
+        DrawWindow();
+        this.timing.Add(Stopwatch.GetElapsedTime(started));
+    }
+
+    private void DrawWindow()
+    {
         // Bei kleinerem Fenster scrollt der Inhalt, statt Spalten zu quetschen.
         ImGui.SetNextWindowSize(new Vector2(660, 640) * ImGuiHelpers.GlobalScale, ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSizeConstraints(new Vector2(520, 360) * ImGuiHelpers.GlobalScale, new Vector2(float.MaxValue, float.MaxValue));
@@ -77,8 +80,11 @@ public sealed class ConfigWindow(
                 case 1:
                     DrawDisplayTab();
                     break;
+                case 2:
+                    DependenciesView.Draw(dependencies);
+                    break;
                 default:
-                    DrawAboutTab();
+                    AboutView.Draw(about);
                     break;
             }
         }
@@ -111,6 +117,20 @@ public sealed class ConfigWindow(
             total += gap + Widgets.PillWidth("Preview", false);
 
         var x = right - total;
+
+        if (config.ShowDiagnostics)
+        {
+            // Rechtsbuendig vor den Pills, aber nie ueber den Namen hinweg.
+            var nameEnd = ImGui.GetItemRectMax().X;
+            var time = this.timing.Summary();
+            var timeX = x - gap * 2 - ImGui.CalcTextSize(time).X;
+            if (timeX >= nameEnd + gap)
+            {
+                ImGui.SetCursorScreenPos(new Vector2(timeX, start.Y + (height - ImGui.GetTextLineHeight()) / 2));
+                ImGui.TextColored(Theme.Muted, time);
+            }
+        }
+
         ImGui.SetCursorScreenPos(new Vector2(x, y));
         Widgets.StatusPill(IinactName, iinactConnected() ? Theme.Success : Theme.Warning);
 
@@ -320,98 +340,13 @@ public sealed class ConfigWindow(
                 "IINACT data is ignored while it runs. Also toggles with /endetailer preview.");
 
             var diagnostics = config.ShowDiagnostics;
-            if (Widgets.ToggleRow("Diagnostics in footer", ref diagnostics, width))
+            if (Widgets.ToggleRow("Diagnostics", ref diagnostics, width,
+                    "Shows draw and update times in the meter footer and the draw time of this window.\nAlso logs them every 10 seconds."))
             {
                 config.ShowDiagnostics = diagnostics;
                 config.Save();
             }
         });
-    }
-
-    private void DrawAboutTab()
-    {
-        Widgets.SectionHeader("Dependency");
-        Widgets.Card("dependency", width =>
-        {
-            var state = CurrentInstall();
-            var connected = iinactConnected();
-
-            var (icon, color, status) = state switch
-            {
-                IinactInstall.NotInstalled => (FontAwesomeIcon.TimesCircle, Theme.Danger, "not installed"),
-                IinactInstall.Disabled => (FontAwesomeIcon.PowerOff, Theme.Warning, "disabled"),
-                _ => connected
-                    ? (FontAwesomeIcon.CheckCircle, Theme.Success, "connected")
-                    : (FontAwesomeIcon.ExclamationTriangle, Theme.Warning, "waiting")
-            };
-
-            var start = ImGui.GetCursorScreenPos();
-            ImGui.SetCursorScreenPos(start + new Vector2(0, ImGui.GetFrameHeight() / 2 - ImGui.GetTextLineHeight() / 2));
-            Widgets.Icon(icon, color);
-
-            ImGui.SetCursorScreenPos(new Vector2(start.X + width - ImGui.CalcTextSize(status).X, start.Y));
-            ImGui.TextColored(color, status);
-
-            ImGui.SetCursorScreenPos(new Vector2(start.X + 30, start.Y));
-            ImGui.TextUnformatted(IinactName);
-            ImGui.SetCursorScreenPos(new Vector2(start.X + 30, ImGui.GetCursorScreenPos().Y));
-            ImGui.TextColored(Theme.Muted, "Supplies the combat data.");
-        });
-
-        ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("Commands");
-        Widgets.Card("commands", _ =>
-        {
-            var column = ImGui.CalcTextSize("/endetailer preview").X + 20;
-            CommandRow("/endetailer", "Show or hide the meter.", column);
-            CommandRow("/endetailer config", "Open these settings.", column);
-            CommandRow("/endetailer lock", "Lock or unlock the meter window.", column);
-            CommandRow("/endetailer preview", "Start or stop the made-up party.", column);
-        });
-
-        ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("License");
-
-        // Die AGPL sieht fuer interaktive Programme einen sichtbaren Hinweis auf
-        // Urheberschaft, fehlende Gewaehrleistung und Lizenz vor.
-        ImGui.TextDisabled("EnDetailer - Copyright (c) 2026 Enjuchan");
-        ImGui.TextDisabled("Licensed under GNU AGPL-3.0, without any warranty.");
-        ImGui.TextDisabled("github.com/Enjuchan/EnDetailer");
-    }
-
-    private static void CommandRow(string command, string description, float column)
-    {
-        var start = ImGui.GetCursorScreenPos();
-        ImGui.TextColored(Theme.AccentLight, command);
-        var next = ImGui.GetCursorScreenPos();
-        ImGui.SetCursorScreenPos(new Vector2(start.X + column, start.Y));
-        ImGui.TextColored(Theme.Muted, description);
-        ImGui.SetCursorScreenPos(next);
-    }
-
-    /// <summary>
-    /// Fragt die Plugin-Liste hoechstens einmal je Sekunde ab, nur solange der About-Tab offen ist.
-    /// </summary>
-    private IinactInstall CurrentInstall()
-    {
-        var now = Environment.TickCount64;
-        if (now < this.nextInstallCheck)
-            return this.iinactInstall;
-
-        this.nextInstallCheck = now + InstallCheckMs;
-        var state = IinactInstall.NotInstalled;
-        foreach (var plugin in pluginInterface.InstalledPlugins)
-        {
-            if (!string.Equals(plugin.InternalName, IinactName, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            state = plugin.IsLoaded ? IinactInstall.Loaded : IinactInstall.Disabled;
-            if (plugin.IsLoaded)
-                break;
-        }
-
-        this.iinactInstall = state;
-        return state;
     }
 
     private static float CellWidth() => ImGui.GetContentRegionAvail().X;

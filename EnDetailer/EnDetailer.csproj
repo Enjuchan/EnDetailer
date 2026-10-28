@@ -1,14 +1,18 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
     <PropertyGroup>
         <AssemblyName>EnDetailer</AssemblyName>
-        <AssemblyVersion>0.2.0.0</AssemblyVersion>
-        <FileVersion>0.2.0.0</FileVersion>
-        <InformationalVersion>0.2.0.0</InformationalVersion>
+        <AssemblyVersion>0.2.1.0</AssemblyVersion>
+        <FileVersion>0.2.1.0</FileVersion>
+        <InformationalVersion>0.2.1.0</InformationalVersion>
         <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
     </PropertyGroup>
     <ItemGroup>
         <Content Include="EnDetailer.json" CopyToOutputDirectory="Always" />
         <Content Include="images\**" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="ECommons" Version="3.2.1.26" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\EnDetailer.Core\EnDetailer.Core.csproj" />

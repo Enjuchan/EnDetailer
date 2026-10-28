@@ -1,15 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Dalamud.Plugin.Services;
 
 namespace EnDetailer;
 
 /// <summary>
-/// Misst Dauern und haelt die der letzten Sekunden fuer die Diagnose-Zeile bereit.
-/// Zusaetzlich gehen Mittel und Hoechstwert wie bei EnGlam und EnMotion alle 10 Sekunden ins Log.
+/// Misst Dauern und hält die der letzten Sekunden für die Diagnose-Zeile bereit. Gemessen wird immer, weil
+/// das kaum etwas kostet; Mittel und Höchstwert gehen nur alle 10 Sekunden ins Log, solange die Diagnose an ist.
 /// </summary>
-public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window)
+public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window, Func<bool> logEnabled)
 {
     private static readonly TimeSpan LogInterval = TimeSpan.FromSeconds(10);
 
@@ -35,8 +34,13 @@ public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window)
         if (now < nextLog)
             return;
 
-        log.Information("{Name}: avg {Average:0.000} ms, max {Max:0.000} ms over {Count} samples.",
-            name, logTotal / logCount, logMax, logCount);
+        // Die Zähler laufen auch bei ausgeschalteter Diagnose weiter, damit der erste Eintrag nach dem
+        // Einschalten nur die letzten 10 Sekunden enthält.
+        if (logEnabled())
+        {
+            log.Information("{Name}: avg {Average:0.000} ms, max {Max:0.000} ms over {Count} samples.",
+                name, logTotal / logCount, logMax, logCount);
+        }
 
         logTotal = 0;
         logMax = 0;
@@ -44,12 +48,20 @@ public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window)
         nextLog = now + LogInterval;
     }
 
-    /// <summary>Mittel und Hoechstwert der Messungen im Fenster, oder Text ohne Werte.</summary>
+    /// <summary>Mittel und Höchstwert der Messungen im Fenster, oder Text ohne Werte.</summary>
     public string Summary()
     {
         if (samples.Count == 0)
             return $"{name}: no data yet";
 
-        return $"{name}: avg {samples.Average(s => s.Ms):0.000} ms, max {samples.Max(s => s.Ms):0.000} ms";
+        var total = 0.0;
+        var max = 0.0;
+        foreach (var (_, ms) in samples)
+        {
+            total += ms;
+            max = Math.Max(max, ms);
+        }
+
+        return $"{name}: avg {total / samples.Count:0.000} ms, max {max:0.000} ms";
     }
 }

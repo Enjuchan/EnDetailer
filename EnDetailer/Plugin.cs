@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -20,6 +21,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IFramework framework;
     private readonly IPlayerState playerState;
     private readonly IChatGui chatGui;
+    private readonly ICondition condition;
 
     private readonly IinactSource source;
     private readonly GameConditions conditions;
@@ -80,6 +82,10 @@ public sealed class Plugin : IDalamudPlugin
         this.framework = framework;
         this.playerState = playerState;
         this.chatGui = chatGui;
+        this.condition = condition;
+
+        // ECommons braucht das für DalamudReflector, das der Dependencies-Tab zum Installieren nutzt.
+        ECommons.ECommonsMain.Init(pluginInterface, this);
 
         this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.config.Initialize(pluginInterface);
@@ -87,15 +93,22 @@ public sealed class Plugin : IDalamudPlugin
 
         this.conditions = new GameConditions(condition, clientState);
         this.visibility = new MeterVisibility(this.conditions);
-        this.drawTiming = new FrameTiming(log, "Meter draw", TimeSpan.FromSeconds(5));
-        this.updateTiming = new FrameTiming(log, "Row update", TimeSpan.FromSeconds(5));
+        this.drawTiming = new FrameTiming(log, "Meter draw", TimeSpan.FromSeconds(5), () => this.config.ShowDiagnostics);
+        this.updateTiming = new FrameTiming(log, "Row update", TimeSpan.FromSeconds(5), () => this.config.ShowDiagnostics);
         this.encounters = new EncounterTracker(this.conditions)
         {
             GracePeriod = TimeSpan.FromSeconds(this.config.GraceSeconds),
             ResetOnZoneChange = this.config.ResetOnZoneChange
         };
 
-        this.configWindow = new ConfigWindow(this.config, this.encounters, pluginInterface, () => this.source?.IsConnected ?? false);
+        var version = pluginInterface.Manifest.AssemblyVersion.ToString(3);
+        this.configWindow = new ConfigWindow(
+            this.config,
+            this.encounters,
+            new Dependencies(pluginInterface, log, EnDetailerDependencies.Groups),
+            EnDetailerAbout.Create(version),
+            log,
+            () => this.source?.IsConnected ?? false);
         this.window = new MeterWindow(this.config, textures);
         this.window.OpenConfigRequested = OpenConfig;
         this.window.OlderRequested = this.history.GoOlder;
@@ -123,22 +136,31 @@ public sealed class Plugin : IDalamudPlugin
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Toggles the EnDetailer window. Use \'config\', \'lock\' or \'preview\' as arguments."
+            HelpMessage = $"{EnDetailerAbout.ToggleEffect} /endetailer config: {EnDetailerAbout.ConfigEffect} " +
+                          $"/endetailer lock: {EnDetailerAbout.LockEffect} /endetailer preview: {EnDetailerAbout.PreviewEffect}"
         });
 
         this.framework.Update += OnFrameworkUpdate;
-        this.pluginInterface.UiBuilder.Draw += DrawMeter;
-        this.pluginInterface.UiBuilder.Draw += this.configWindow.Draw;
+        this.pluginInterface.UiBuilder.Draw += Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi += OpenMain;
         this.log.Information("EnDetailer loaded.");
     }
 
     /// <summary>
-    /// Zeichnet das Meter nur im Spiel, nicht auf dem Titelbildschirm und nicht in
-    /// Ladebildschirmen. Das Einstellungsfenster haengt bewusst nicht daran, damit
-    /// es auch vor dem Login aus dem Installer heraus aufgeht.
+    /// In Ladebildschirmen wird nichts gezeichnet. Eine Pruefung auf den Login fehlt mit Absicht:
+    /// Das Einstellungsfenster soll vom Titelbildschirm aus ueber den Plugin-Installer erreichbar sein.
+    /// Das Meter prueft den Login selbst.
     /// </summary>
+    private void Draw()
+    {
+        if (this.condition[ConditionFlag.BetweenAreas] || this.condition[ConditionFlag.BetweenAreas51])
+            return;
+
+        DrawMeter();
+        this.configWindow.Draw();
+    }
+
     private void DrawMeter()
     {
         if (!this.conditions.CanShowOverlay)
@@ -567,12 +589,12 @@ public sealed class Plugin : IDalamudPlugin
     public void Dispose()
     {
         this.framework.Update -= OnFrameworkUpdate;
-        this.pluginInterface.UiBuilder.Draw -= DrawMeter;
-        this.pluginInterface.UiBuilder.Draw -= this.configWindow.Draw;
+        this.pluginInterface.UiBuilder.Draw -= Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi -= OpenMain;
         this.commandManager.RemoveHandler(CommandName);
         this.source.SnapshotReceived -= OnIinactSnapshot;
         this.source.Dispose();
+        ECommons.ECommonsMain.Dispose();
     }
 }
