@@ -5,15 +5,15 @@ using Dalamud.Interface;
 namespace EnDetailer.Ui;
 
 /// <param name="Input">Befehl samt Argumenten, wie er getippt wird.</param>
-public sealed record AboutCommand(string Input, string Effect);
+public sealed record AboutCommand(string Input, LocText Effect);
 
-public sealed record AboutLink(string Label, FontAwesomeIcon Icon, string Url);
+public sealed record AboutLink(LocText Label, FontAwesomeIcon Icon, string Url);
 
 /// <param name="Copyright">Ganze Zeile, etwa mit Plugin-Name, Jahr und Urheber.</param>
 public sealed record AboutInfo(
     string Name,
     string Version,
-    string Description,
+    LocText Description,
     IReadOnlyList<AboutCommand> Commands,
     string License,
     string Copyright,
@@ -24,7 +24,7 @@ public static class AboutView
 {
     public static void Draw(AboutInfo info)
     {
-        Widgets.SectionHeader("About");
+        Widgets.SectionHeader(Loc.T("About", "Info"));
         Widgets.Card("about", width =>
         {
             ImGui.TextColored(Theme.AccentLight, info.Name);
@@ -32,12 +32,12 @@ public static class AboutView
             ImGui.TextColored(Theme.Muted, info.Version);
 
             ImGui.PushTextWrapPos(ImGui.GetCursorScreenPos().X + width);
-            ImGui.TextUnformatted(info.Description);
+            ImGui.TextUnformatted(info.Description.ToString());
             ImGui.PopTextWrapPos();
         });
 
         ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("Commands");
+        Widgets.SectionHeader(Loc.T("Commands", "Befehle"));
         Widgets.Card("commands", _ =>
         {
             var column = info.Commands.Count == 0 ? 0f : info.Commands.Max(c => ImGui.CalcTextSize(c.Input).X) + 20;
@@ -46,11 +46,11 @@ public static class AboutView
         });
 
         ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("License");
+        Widgets.SectionHeader(Loc.T("License", "Lizenz"));
         Widgets.Card("license", _ =>
         {
             ImGui.TextColored(Theme.Muted, info.Copyright);
-            ImGui.TextColored(Theme.Muted, $"Licensed under GNU {info.License}, without any warranty.");
+            ImGui.TextColored(Theme.Muted, Loc.T($"Licensed under GNU {info.License}, without any warranty.", $"Lizenziert unter GNU {info.License}, ohne jede Gewährleistung."));
 
             if (info.Links.Count == 0)
                 return;
@@ -73,7 +73,7 @@ public static class AboutView
         ImGui.TextColored(Theme.Text, command.Input);
         var next = ImGui.GetCursorScreenPos();
         ImGui.SetCursorScreenPos(new Vector2(start.X + column, start.Y));
-        ImGui.TextColored(Theme.Muted, command.Effect);
+        ImGui.TextColored(Theme.Muted, command.Effect.ToString());
         ImGui.SetCursorScreenPos(next);
     }
 
@@ -88,7 +88,8 @@ public static class AboutView
         var iconSize = ImGui.CalcTextSize(iconText);
         ImGui.PopFont();
 
-        var textSize = ImGui.CalcTextSize(link.Label);
+        var label = link.Label.ToString();
+        var textSize = ImGui.CalcTextSize(label);
         var size = new Vector2(iconSize.X + textSize.X + 30, ImGui.GetFrameHeight());
 
         var clicked = ImGui.InvisibleButton($"##link{index}", size);
@@ -103,7 +104,7 @@ public static class AboutView
         ImGui.PushFont(UiBuilder.IconFont);
         draw.AddText(new Vector2(pos.X + 12, pos.Y + (size.Y - iconSize.Y) / 2), Theme.U32(Theme.AccentLight), iconText);
         ImGui.PopFont();
-        draw.AddText(new Vector2(pos.X + 18 + iconSize.X, pos.Y + (size.Y - textSize.Y) / 2), Theme.U32(hovered ? Theme.Text : Theme.Muted), link.Label);
+        draw.AddText(new Vector2(pos.X + 18 + iconSize.X, pos.Y + (size.Y - textSize.Y) / 2), Theme.U32(hovered ? Theme.Text : Theme.Muted), label);
 
         return clicked;
     }

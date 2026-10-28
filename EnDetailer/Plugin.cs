@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
+using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using EnDetailer.Core;
@@ -33,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly Configuration config;
     private readonly ConfigWindow configWindow;
+    private readonly WindowSystem windows = new("EnDetailer");
 
     private readonly MeterVisibility visibility;
     private readonly FrameTiming drawTiming;
@@ -88,6 +90,7 @@ public sealed class Plugin : IDalamudPlugin
         ECommons.ECommonsMain.Init(pluginInterface, this);
 
         this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Loc.Init(pluginInterface, this.config.Language);
         this.config.Initialize(pluginInterface);
         Widgets.Init(textures);
 
@@ -109,6 +112,7 @@ public sealed class Plugin : IDalamudPlugin
             EnDetailerAbout.Create(version),
             log,
             () => this.source?.IsConnected ?? false);
+        this.windows.AddWindow(this.configWindow);
         this.window = new MeterWindow(this.config, textures);
         this.window.OpenConfigRequested = OpenConfig;
         this.window.OlderRequested = this.history.GoOlder;
@@ -134,17 +138,33 @@ public sealed class Plugin : IDalamudPlugin
         // Plugins gleichzeitig, und IINACT ist dann meist noch nicht bereit.
         // Der Framework-Puls versucht es, bis es klappt.
 
-        this.commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
-        {
-            HelpMessage = $"{EnDetailerAbout.ToggleEffect} /endetailer config: {EnDetailerAbout.ConfigEffect} " +
-                          $"/endetailer lock: {EnDetailerAbout.LockEffect} /endetailer preview: {EnDetailerAbout.PreviewEffect}"
-        });
+        // Dalamud übernimmt den Hilfetext bei der Anmeldung, deshalb wird der Befehl beim Sprachwechsel neu angemeldet.
+        RegisterCommand();
+        Loc.Changed += RegisterCommand;
+        Loc.Changed += OnLanguageChanged;
 
         this.framework.Update += OnFrameworkUpdate;
         this.pluginInterface.UiBuilder.Draw += Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi += OpenMain;
         this.log.Information("EnDetailer loaded.");
+    }
+
+    private void RegisterCommand()
+    {
+        this.commandManager.RemoveHandler(CommandName);
+        this.commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+        {
+            HelpMessage = $"{EnDetailerAbout.ToggleEffect} /endetailer config: {EnDetailerAbout.ConfigEffect} " +
+                          $"/endetailer lock: {EnDetailerAbout.LockEffect} /endetailer preview: {EnDetailerAbout.PreviewEffect}"
+        });
+    }
+
+    /// <summary>Texte, die nur bei Änderung gebaut werden, müssen in der neuen Sprache neu entstehen.</summary>
+    private void OnLanguageChanged()
+    {
+        this.shownHistoryVersion = -1;
+        this.shownRecord = null;
     }
 
     /// <summary>
@@ -158,7 +178,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         DrawMeter();
-        this.configWindow.Draw();
+        this.windows.Draw();
     }
 
     private void DrawMeter()
@@ -211,7 +231,7 @@ public sealed class Plugin : IDalamudPlugin
         this.window.Visible = !this.window.Visible;
     }
 
-    private void OpenConfig() => this.configWindow.Visible = true;
+    private void OpenConfig() => this.configWindow.IsOpen = true;
 
     /// <summary>
     /// Wird vom Plugin-Installer ausgeloest. Dalamud erwartet diesen Rueckruf fuer
@@ -424,12 +444,16 @@ public sealed class Plugin : IDalamudPlugin
 
             var rows = record.For(this.window.Metric);
             this.window.SetRows(rows.Rows);
-            this.window.HeaderTitle = record.Title;
+            this.window.HeaderTitle = DisplayTitle(record.Title);
             this.window.HeaderDuration = record.ActiveDuration.ToString(@"mm\:ss");
             this.window.Deaths = record.Deaths;
             this.window.TotalDps = rows.Sum(this.window.Mode == DpsMode.Rolling);
         }
     }
+
+    /// <summary>Der Titel der Vorschau kommt aus dem Core ohne Sprache; Titel aus dem Spiel bleiben, wie sie sind.</summary>
+    private static string DisplayTitle(string title) =>
+        title == PreviewCombat.Title ? Loc.T("Preview", "Vorschau") : title;
 
     private void ClearRows()
     {
@@ -463,7 +487,7 @@ public sealed class Plugin : IDalamudPlugin
         for (var i = 0; i < count; i++)
         {
             var entry = this.history[i];
-            var title = entry.Title.Length > 0 ? entry.Title : "Fight";
+            var title = entry.Title.Length > 0 ? DisplayTitle(entry.Title) : Loc.T("Fight", "Kampf");
             labels[i] = $"{title}  {entry.ActiveDuration:mm\\:ss}##fight{i}";
         }
 
@@ -577,7 +601,7 @@ public sealed class Plugin : IDalamudPlugin
                 this.rowBuffer);
 
             this.window.SetRows(this.rowBuffer);
-            this.window.HeaderTitle = snapshot.Title;
+            this.window.HeaderTitle = DisplayTitle(snapshot.Title);
             this.window.Deaths = totals.Deaths;
 
             // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
@@ -588,6 +612,10 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        Loc.Changed -= RegisterCommand;
+        Loc.Changed -= OnLanguageChanged;
+        Loc.Dispose();
+        this.windows.RemoveAllWindows();
         this.framework.Update -= OnFrameworkUpdate;
         this.pluginInterface.UiBuilder.Draw -= Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;

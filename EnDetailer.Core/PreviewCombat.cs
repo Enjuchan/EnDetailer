@@ -14,6 +14,9 @@ namespace EnDetailer.Core;
 /// </summary>
 public sealed class PreviewCombat
 {
+    /// <summary>Titel des erfundenen Kampfes; die Oberfläche zeigt ihn in der gewählten Sprache.</summary>
+    public const string Title = "Preview";
+
     private const double Gcd = 2.5;
     private const double BurstCycle = 120;
     private const double BurstStart = 8;
@@ -121,7 +124,7 @@ public sealed class PreviewCombat
         }
 
         var duration = TimeSpan.FromSeconds(elapsed);
-        return new CombatSnapshot(at, "Preview", duration.ToString(@"mm\:ss"), true, combatants);
+        return new CombatSnapshot(at, Title, duration.ToString(@"mm\:ss"), true, combatants);
     }
 
     /// <summary>Anteil der Heilung, der als Schild gebucht wird: Gelehrte viel, Tanks etwas, Rest nichts.</summary>

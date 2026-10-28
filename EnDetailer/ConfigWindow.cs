@@ -5,26 +5,29 @@ using System.Reflection;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Utility;
+using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using EnDetailer.Core;
 using EnDetailer.Ui;
 
 namespace EnDetailer;
 
-public sealed class ConfigWindow(
-    Configuration config,
-    EncounterTracker encounters,
-    Dependencies dependencies,
-    AboutInfo about,
-    IPluginLog log,
-    Func<bool> iinactConnected)
+public sealed class ConfigWindow : Window
 {
-    private static readonly (FontAwesomeIcon Icon, string Label)[] Tabs =
+    private static readonly (FontAwesomeIcon Icon, string Label)[] TabsEn =
     [
         (FontAwesomeIcon.Calculator, "Meter"),
         (FontAwesomeIcon.Eye, "Display"),
         (FontAwesomeIcon.PuzzlePiece, "Dependencies"),
         (FontAwesomeIcon.InfoCircle, "About")
+    ];
+
+    private static readonly (FontAwesomeIcon Icon, string Label)[] TabsDe =
+    [
+        (FontAwesomeIcon.Calculator, "Meter"),
+        (FontAwesomeIcon.Eye, "Anzeige"),
+        (FontAwesomeIcon.PuzzlePiece, "Abhängigkeiten"),
+        (FontAwesomeIcon.InfoCircle, "Info")
     ];
 
     private static readonly DpsMode[] DpsModes = [DpsMode.Rolling, DpsMode.Encounter];
@@ -37,20 +40,67 @@ public sealed class ConfigWindow(
 
     private const string IinactName = "IINACT";
 
-    private readonly FrameTiming timing = new(log, "Settings draw", TimeSpan.FromSeconds(5), () => config.ShowDiagnostics);
+    private readonly Configuration config;
+    private readonly EncounterTracker encounters;
+    private readonly Dependencies dependencies;
+    private readonly AboutInfo about;
+    private readonly Func<bool> iinactConnected;
+    private readonly FrameTiming timing;
 
-    public bool Visible;
+    private Theme.Scope? themeScope;
 
     /// <summary>Vorschau mit erfundener Gruppe. Nur zur Laufzeit, wird nicht gespeichert.</summary>
     public bool Preview;
 
     private int tab;
 
-    public void Draw()
+    public ConfigWindow(
+        Configuration config,
+        EncounterTracker encounters,
+        Dependencies dependencies,
+        AboutInfo about,
+        IPluginLog log,
+        Func<bool> iinactConnected)
+        // Der Name bleibt "EnDetailer Settings", damit gespeicherte Fensterlage und -größe erhalten bleiben.
+        : base("EnDetailer Settings")
     {
-        if (!this.Visible)
-            return;
+        this.config = config;
+        this.encounters = encounters;
+        this.dependencies = dependencies;
+        this.about = about;
+        this.iinactConnected = iinactConnected;
+        this.timing = new FrameTiming(log, "Settings draw", TimeSpan.FromSeconds(5), () => config.ShowDiagnostics);
 
+        // Das Fenster war bisher ein einfaches ImGui-Fenster ohne Escape-Schließen, Töne und Einblenden.
+        RespectCloseHotkey = false;
+        DisableWindowSounds = true;
+        DisableFadeInFadeOut = true;
+
+        TitleBarButtons.Add(Loc.CreateButton(code =>
+        {
+            config.Language = code;
+            config.Save();
+        }));
+    }
+
+    public override void PreDraw()
+    {
+        this.themeScope = Theme.Push();
+
+        // Size und SizeConstraints bleiben leer, weil Dalamud sie mit der globalen Skalierung malnehmen würde.
+        // Bei kleinerem Fenster scrollt der Inhalt, statt Spalten zu quetschen.
+        ImGui.SetNextWindowSize(new Vector2(660, 640) * ImGuiHelpers.GlobalScale, ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSizeConstraints(new Vector2(520, 360) * ImGuiHelpers.GlobalScale, new Vector2(float.MaxValue, float.MaxValue));
+    }
+
+    public override void PostDraw()
+    {
+        this.themeScope?.Dispose();
+        this.themeScope = null;
+    }
+
+    public override void Draw()
+    {
         var started = Stopwatch.GetTimestamp();
         DrawWindow();
         this.timing.Add(Stopwatch.GetElapsedTime(started));
@@ -58,38 +108,27 @@ public sealed class ConfigWindow(
 
     private void DrawWindow()
     {
-        // Bei kleinerem Fenster scrollt der Inhalt, statt Spalten zu quetschen.
-        ImGui.SetNextWindowSize(new Vector2(660, 640) * ImGuiHelpers.GlobalScale, ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSizeConstraints(new Vector2(520, 360) * ImGuiHelpers.GlobalScale, new Vector2(float.MaxValue, float.MaxValue));
+        Decor.Background();
+        DrawHeader();
+        ImGui.Dummy(new Vector2(0, 2));
+        Widgets.PillTabs("##tabs", Loc.Current == Language.German ? TabsDe : TabsEn, ref this.tab);
+        ImGui.Dummy(new Vector2(0, 4));
 
-        using var theme = Theme.Push();
-        var open = ImGui.Begin("EnDetailer Settings", ref this.Visible);
-        if (open)
+        switch (this.tab)
         {
-            Decor.Background();
-            DrawHeader();
-            ImGui.Dummy(new Vector2(0, 2));
-            Widgets.PillTabs("##tabs", Tabs, ref this.tab);
-            ImGui.Dummy(new Vector2(0, 4));
-
-            switch (this.tab)
-            {
-                case 0:
-                    DrawMeterTab();
-                    break;
-                case 1:
-                    DrawDisplayTab();
-                    break;
-                case 2:
-                    DependenciesView.Draw(dependencies);
-                    break;
-                default:
-                    AboutView.Draw(about);
-                    break;
-            }
+            case 0:
+                DrawMeterTab();
+                break;
+            case 1:
+                DrawDisplayTab();
+                break;
+            case 2:
+                DependenciesView.Draw(this.dependencies);
+                break;
+            default:
+                AboutView.Draw(this.about);
+                break;
         }
-
-        ImGui.End();
     }
 
     private void DrawHeader()
@@ -107,6 +146,7 @@ public sealed class ConfigWindow(
         ImGui.SameLine();
         ImGui.TextColored(Theme.Muted, Version);
 
+        var previewName = Loc.T("Preview", "Vorschau");
         var pillHeight = ImGui.GetTextLineHeight() + 6;
         var y = start.Y + (height - pillHeight) / 2;
         var gap = ImGui.GetStyle().ItemSpacing.X;
@@ -114,11 +154,11 @@ public sealed class ConfigWindow(
         var iinactWidth = Widgets.PillWidth(IinactName, true);
         var total = iinactWidth;
         if (this.Preview)
-            total += gap + Widgets.PillWidth("Preview", false);
+            total += gap + Widgets.PillWidth(previewName, false);
 
         var x = right - total;
 
-        if (config.ShowDiagnostics)
+        if (this.config.ShowDiagnostics)
         {
             // Rechtsbuendig vor den Pills, aber nie ueber den Namen hinweg.
             var nameEnd = ImGui.GetItemRectMax().X;
@@ -132,12 +172,12 @@ public sealed class ConfigWindow(
         }
 
         ImGui.SetCursorScreenPos(new Vector2(x, y));
-        Widgets.StatusPill(IinactName, iinactConnected() ? Theme.Success : Theme.Warning);
+        Widgets.StatusPill(IinactName, this.iinactConnected() ? Theme.Success : Theme.Warning);
 
         if (this.Preview)
         {
             ImGui.SetCursorScreenPos(new Vector2(x + iinactWidth + gap, y));
-            Widgets.Pill("Preview", Theme.Accent, Theme.AccentLight);
+            Widgets.Pill(previewName, Theme.Accent, Theme.AccentLight);
         }
 
         ImGui.SetCursorScreenPos(new Vector2(start.X, start.Y + height + 10));
@@ -146,235 +186,262 @@ public sealed class ConfigWindow(
 
     private void DrawMeterTab()
     {
-        Widgets.SectionHeader("Calculation");
+        Widgets.SectionHeader(Loc.T("Calculation", "Berechnung"));
         Widgets.Card("calculation", width =>
         {
-            var mode = config.Mode;
-            if (SegmentedRow("Display mode", "##mode", DpsModes, ModeLabel, ref mode, width, 180,
-                    "Now follows your current damage over the reaction time.\nFight averages over the whole encounter.\nAlso in the meter's right-click menu."))
+            var mode = this.config.Mode;
+            if (SegmentedRow(Loc.T("Display mode", "Anzeigemodus"), "##mode", DpsModes, ModeLabel, ref mode, width, 180,
+                    Loc.T("Now follows your current damage over the reaction time.\nFight averages over the whole encounter.\nAlso in the meter's right-click menu.",
+                          "Jetzt folgt deinem aktuellen Schaden über die Reaktionszeit.\nKampf mittelt über den ganzen Kampf.\nAuch im Rechtsklick-Menü des Meters.")))
             {
-                config.Mode = mode;
-                config.Save();
+                this.config.Mode = mode;
+                this.config.Save();
             }
 
-            var reaction = config.ReactionSeconds;
-            if (SliderIntRow("Reaction time", ref reaction, ReactionTime.MinSeconds, ReactionTime.MaxSeconds, "%d s", width,
-                    "How quickly the current DPS follows your damage.\n" +
-                    "Short values react faster to bursts.\n" +
-                    "Long values show calmer numbers.\n" +
-                    "The default is 10 s."))
+            var reaction = this.config.ReactionSeconds;
+            if (SliderIntRow(Loc.T("Reaction time", "Reaktionszeit"), ref reaction, ReactionTime.MinSeconds, ReactionTime.MaxSeconds, "%d s", width,
+                    Loc.T("How quickly the current DPS follows your damage.\n" +
+                          "Short values react faster to bursts.\n" +
+                          "Long values show calmer numbers.\n" +
+                          "The default is 10 s.",
+                          "Wie schnell das aktuelle DPS deinem Schaden folgt.\n" +
+                          "Kurze Werte reagieren schneller auf Bursts.\n" +
+                          "Lange Werte zeigen ruhigere Zahlen.\n" +
+                          "Standard sind 10 s.")))
             {
-                config.ReactionSeconds = reaction;
-                config.Save();
+                this.config.ReactionSeconds = reaction;
+                this.config.Save();
             }
         });
 
         ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("Fight",
-            "In IINACT, turn OFF 'End encounter automatically after leaving combat'.\n" +
-            "EnDetailer decides that on its own.");
+        Widgets.SectionHeader(Loc.T("Fight", "Kampf"),
+            Loc.T("In IINACT, turn OFF 'End encounter automatically after leaving combat'.\n" +
+                  "EnDetailer decides that on its own.",
+                  "Schalte in IINACT die Option 'End encounter automatically after leaving combat' aus.\n" +
+                  "EnDetailer entscheidet das selbst."));
         Widgets.Card("fight", width =>
         {
-            var grace = config.GraceSeconds;
-            if (SliderIntRow("Grace period", ref grace, 5, 60, "%d s", width,
-                    "How long combat must stay quiet before the encounter ends.\n" +
-                    "Cutscenes do not count - they keep the fight alive.\n" +
-                    "Raise this if a fight still gets cut short."))
+            var grace = this.config.GraceSeconds;
+            if (SliderIntRow(Loc.T("Grace period", "Karenzzeit"), ref grace, 5, 60, "%d s", width,
+                    Loc.T("How long combat must stay quiet before the encounter ends.\n" +
+                          "Cutscenes do not count - they keep the fight alive.\n" +
+                          "Raise this if a fight still gets cut short.",
+                          "Wie lange der Kampf ruhig bleiben muss, bevor das Encounter endet.\n" +
+                          "Cutscenes zählen nicht, sie halten den Kampf am Leben.\n" +
+                          "Erhöhe den Wert, wenn ein Kampf trotzdem zu früh endet.")))
             {
-                config.GraceSeconds = grace;
-                encounters.GracePeriod = TimeSpan.FromSeconds(grace);
-                config.Save();
+                this.config.GraceSeconds = grace;
+                this.encounters.GracePeriod = TimeSpan.FromSeconds(grace);
+                this.config.Save();
             }
 
-            var zone = config.ResetOnZoneChange;
-            if (Widgets.ToggleRow("Reset on zone change", ref zone, width))
+            var zone = this.config.ResetOnZoneChange;
+            if (Widgets.ToggleRow(Loc.T("Reset on zone change", "Bei Gebietswechsel zurücksetzen"), ref zone, width))
             {
-                config.ResetOnZoneChange = zone;
-                encounters.ResetOnZoneChange = zone;
-                config.Save();
+                this.config.ResetOnZoneChange = zone;
+                this.encounters.ResetOnZoneChange = zone;
+                this.config.Save();
             }
 
-            var endIinact = config.EndIinactEncounter;
-            if (Widgets.ToggleRow("End IINACT encounter", ref endIinact, width,
-                    "Ends IINACTs encounter once EnDetailer considers the fight over.\n" +
-                    "Keeps both in sync and cuts logs cleanly for FFLogs.\n" +
-                    "This prints a local echo line 'end' to your chat."))
+            var endIinact = this.config.EndIinactEncounter;
+            if (Widgets.ToggleRow(Loc.T("End IINACT encounter", "IINACT-Encounter beenden"), ref endIinact, width,
+                    Loc.T("Ends IINACTs encounter once EnDetailer considers the fight over.\n" +
+                          "Keeps both in sync and cuts logs cleanly for FFLogs.\n" +
+                          "This prints a local echo line 'end' to your chat.",
+                          "Beendet das Encounter von IINACT, sobald EnDetailer den Kampf für beendet hält.\n" +
+                          "Hält beide synchron und schneidet Logs sauber für FFLogs.\n" +
+                          "Dabei erscheint die lokale Echo-Zeile 'end' in deinem Chat.")))
             {
-                config.EndIinactEncounter = endIinact;
-                config.Save();
+                this.config.EndIinactEncounter = endIinact;
+                this.config.Save();
             }
         });
     }
 
     private void DrawDisplayTab()
     {
-        Widgets.SectionHeader("Visibility");
+        Widgets.SectionHeader(Loc.T("Visibility", "Sichtbarkeit"));
         Widgets.Card("visibility", width =>
         {
-            var show = config.ShowMode;
-            if (SegmentedRow("Show meter", "##show", ShowModes, ShowLabel, ref show, width, 300))
+            var show = this.config.ShowMode;
+            if (SegmentedRow(Loc.T("Show meter", "Meter zeigen"), "##show", ShowModes, ShowLabel, ref show, width, 300))
             {
-                config.ShowMode = show;
-                config.Save();
+                this.config.ShowMode = show;
+                this.config.Save();
             }
 
-            if (config.ShowMode == ShowMode.InCombat)
+            if (this.config.ShowMode == ShowMode.InCombat)
             {
-                var after = config.ShowAfterCombatSeconds;
-                if (SliderIntRow("Keep after combat", ref after, 0, 120, "%d s", width))
+                var after = this.config.ShowAfterCombatSeconds;
+                if (SliderIntRow(Loc.T("Keep after combat", "Nach dem Kampf behalten"), ref after, 0, 120, "%d s", width))
                 {
-                    config.ShowAfterCombatSeconds = after;
-                    config.Save();
+                    this.config.ShowAfterCombatSeconds = after;
+                    this.config.Save();
                 }
             }
 
-            var hideCutscenes = config.HideInCutscenes;
-            if (Widgets.ToggleRow("Hide in cutscenes", ref hideCutscenes, width))
+            var hideCutscenes = this.config.HideInCutscenes;
+            if (Widgets.ToggleRow(Loc.T("Hide in cutscenes", "In Cutscenes verbergen"), ref hideCutscenes, width))
             {
-                config.HideInCutscenes = hideCutscenes;
-                config.Save();
+                this.config.HideInCutscenes = hideCutscenes;
+                this.config.Save();
             }
 
-            var locked = config.Locked;
-            if (Widgets.ToggleRow("Lock window", ref locked, width,
-                    "Locked: fixed in place and click-through.\n" +
-                    "In combat you hit the boss instead of the window.\n" +
-                    "Unlock again to sort or move it.\n" +
-                    "Also toggles with /endetailer lock."))
+            var locked = this.config.Locked;
+            if (Widgets.ToggleRow(Loc.T("Lock window", "Fenster sperren"), ref locked, width,
+                    Loc.T("Locked: fixed in place and click-through.\n" +
+                          "In combat you hit the boss instead of the window.\n" +
+                          "Unlock again to sort or move it.\n" +
+                          "Also toggles with /endetailer lock.",
+                          "Gesperrt: fest und klickdurchlässig.\n" +
+                          "Im Kampf triffst du den Boss statt des Fensters.\n" +
+                          "Entsperre es wieder, um zu sortieren oder zu verschieben.\n" +
+                          "Schaltet auch mit /endetailer lock um.")))
             {
-                config.Locked = locked;
-                config.Save();
+                this.config.Locked = locked;
+                this.config.Save();
             }
         });
 
         ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("Look");
+        Widgets.SectionHeader(Loc.T("Look", "Aussehen"));
         Widgets.Card("look", width =>
         {
             if (!ImGui.BeginTable("##lookTable", 2, ImGuiTableFlags.SizingStretchSame))
                 return;
 
             ImGui.TableNextColumn();
-            var alpha = config.BackgroundAlpha;
-            if (SliderFloatRow("Background opacity", ref alpha, 0f, 1f, "%.2f", CellWidth()))
+            var alpha = this.config.BackgroundAlpha;
+            if (SliderFloatRow(Loc.T("Background opacity", "Hintergrund-Deckkraft"), ref alpha, 0f, 1f, "%.2f", CellWidth()))
             {
-                config.BackgroundAlpha = alpha;
-                config.Save();
+                this.config.BackgroundAlpha = alpha;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var barAlpha = (int)config.BarAlpha;
-            if (SliderIntRow("Bar opacity", ref barAlpha, 40, 255, "%d", CellWidth()))
+            var barAlpha = (int)this.config.BarAlpha;
+            if (SliderIntRow(Loc.T("Bar opacity", "Balken-Deckkraft"), ref barAlpha, 40, 255, "%d", CellWidth()))
             {
-                config.BarAlpha = (byte)barAlpha;
-                config.Save();
+                this.config.BarAlpha = (byte)barAlpha;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var fontScale = config.FontScale;
-            if (SliderFloatRow("Font size", ref fontScale, 0.7f, 2.0f, "%.2f", CellWidth(), "Bar height and job icons scale along."))
+            var fontScale = this.config.FontScale;
+            if (SliderFloatRow(Loc.T("Font size", "Schriftgröße"), ref fontScale, 0.7f, 2.0f, "%.2f", CellWidth(),
+                    Loc.T("Bar height and job icons scale along.", "Balkenhöhe und Job-Icons skalieren mit.")))
             {
-                config.FontScale = fontScale;
-                config.Save();
+                this.config.FontScale = fontScale;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var style = config.TextStyle;
-            if (SegmentedRow("Text style", "##style", TextStyles, StyleLabel, ref style, CellWidth(), 170))
+            var style = this.config.TextStyle;
+            if (SegmentedRow(Loc.T("Text style", "Textstil"), "##style", TextStyles, StyleLabel, ref style, CellWidth(), 170))
             {
-                config.TextStyle = style;
-                config.Save();
+                this.config.TextStyle = style;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var extent = config.BarExtent;
-            if (SegmentedRow("Bar length", "##extent", BarExtents, ExtentLabel, ref extent, CellWidth(), 170,
-                    "Name: bar behind the name only.\nTotal: through the Total column.\nRow: across the whole row."))
+            var extent = this.config.BarExtent;
+            if (SegmentedRow(Loc.T("Bar length", "Balkenlänge"), "##extent", BarExtents, ExtentLabel, ref extent, CellWidth(), 170,
+                    Loc.T("Name: bar behind the name only.\nTotal: through the Total column.\nRow: across the whole row.",
+                          "Name: Balken nur hinter dem Namen.\nSumme: bis zur Spalte Summe.\nZeile: über die ganze Zeile.")))
             {
-                config.BarExtent = extent;
-                config.Save();
+                this.config.BarExtent = extent;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var icons = config.ShowJobIcons;
-            if (Widgets.ToggleRow("Job icons", ref icons, CellWidth()))
+            var icons = this.config.ShowJobIcons;
+            if (Widgets.ToggleRow(Loc.T("Job icons", "Job-Icons"), ref icons, CellWidth()))
             {
-                config.ShowJobIcons = icons;
-                config.Save();
+                this.config.ShowJobIcons = icons;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var highlightSelf = config.HighlightSelf;
-            if (Widgets.ToggleRow("Highlight my row", ref highlightSelf, CellWidth()))
+            var highlightSelf = this.config.HighlightSelf;
+            if (Widgets.ToggleRow(Loc.T("Highlight my row", "Meine Zeile hervorheben"), ref highlightSelf, CellWidth()))
             {
-                config.HighlightSelf = highlightSelf;
-                config.Save();
+                this.config.HighlightSelf = highlightSelf;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var stripes = config.RowStripes;
-            if (Widgets.ToggleRow("Row stripes", ref stripes, CellWidth()))
+            var stripes = this.config.RowStripes;
+            if (Widgets.ToggleRow(Loc.T("Row stripes", "Zeilenstreifen"), ref stripes, CellWidth()))
             {
-                config.RowStripes = stripes;
-                config.Save();
+                this.config.RowStripes = stripes;
+                this.config.Save();
             }
 
             ImGui.TableNextColumn();
-            var graph = config.ShowGraph;
-            if (Widgets.ToggleRow("Fight graph", ref graph, CellWidth(),
-                    "A narrow graph of the group's current rate under the header.\nBursts show up as peaks."))
+            var graph = this.config.ShowGraph;
+            if (Widgets.ToggleRow(Loc.T("Fight graph", "Kampfgraph"), ref graph, CellWidth(),
+                    Loc.T("A narrow graph of the group's current rate under the header.\nBursts show up as peaks.",
+                          "Ein schmaler Graph der aktuellen Gruppenrate unter dem Kopf.\nBursts erscheinen als Spitzen.")))
             {
-                config.ShowGraph = graph;
-                config.Save();
+                this.config.ShowGraph = graph;
+                this.config.Save();
             }
 
             ImGui.EndTable();
         });
 
         ImGui.Dummy(new Vector2(0, 4));
-        Widgets.SectionHeader("Tools");
+        Widgets.SectionHeader(Loc.T("Tools", "Werkzeuge"));
         Widgets.Card("tools", width =>
         {
-            Widgets.ToggleRow("Preview with a made-up party", ref this.Preview, width,
-                "Fills the meter with eight made-up players, including burst windows.\n" +
-                "IINACT data is ignored while it runs. Also toggles with /endetailer preview.");
+            Widgets.ToggleRow(Loc.T("Preview with a made-up party", "Vorschau mit erfundener Gruppe"), ref this.Preview, width,
+                Loc.T("Fills the meter with eight made-up players, including burst windows.\n" +
+                      "IINACT data is ignored while it runs. Also toggles with /endetailer preview.",
+                      "Füllt das Meter mit acht erfundenen Spielern samt Burst-Phasen.\n" +
+                      "IINACT-Daten werden währenddessen ignoriert. Schaltet auch mit /endetailer preview um."));
 
-            var diagnostics = config.ShowDiagnostics;
-            if (Widgets.ToggleRow("Diagnostics", ref diagnostics, width,
-                    "Shows draw and update times in the meter footer and the draw time of this window.\nAlso logs them every 10 seconds."))
+            var diagnostics = this.config.ShowDiagnostics;
+            if (Widgets.ToggleRow(Loc.T("Diagnostics", "Diagnose"), ref diagnostics, width,
+                    Loc.T("Shows draw and update times in the meter footer and the draw time of this window.\nAlso logs them every 10 seconds.",
+                          "Zeigt Zeichen- und Updatezeiten in der Fußzeile des Meters und die Zeichenzeit dieses Fensters.\nSchreibt sie auch alle 10 Sekunden ins Log.")))
             {
-                config.ShowDiagnostics = diagnostics;
-                config.Save();
+                this.config.ShowDiagnostics = diagnostics;
+                this.config.Save();
             }
         });
     }
 
     private static float CellWidth() => ImGui.GetContentRegionAvail().X;
 
-    private static string ModeLabel(DpsMode mode) => mode == DpsMode.Rolling ? "Now" : "Fight";
+    private static string ModeLabel(DpsMode mode) => mode == DpsMode.Rolling ? Loc.T("Now", "Jetzt") : Loc.T("Fight", "Kampf");
 
     private static string ShowLabel(ShowMode mode) => mode switch
     {
-        ShowMode.Always => "Always",
-        ShowMode.InCombat => "In combat",
-        _ => "In duty"
+        ShowMode.Always => Loc.T("Always", "Immer"),
+        ShowMode.InCombat => Loc.T("In combat", "Im Kampf"),
+        _ => Loc.T("In duty", "In Instanz")
     };
 
     private static string StyleLabel(TextStyle style) => style switch
     {
-        TextStyle.Shadow => "Shadow",
-        TextStyle.Outline => "Outline",
-        _ => "Plain"
+        TextStyle.Shadow => Loc.T("Shadow", "Schatten"),
+        TextStyle.Outline => Loc.T("Outline", "Kontur"),
+        _ => Loc.T("Plain", "Ohne")
     };
 
     private static string ExtentLabel(BarExtent extent) => extent switch
     {
         BarExtent.NameOnly => "Name",
-        BarExtent.ThroughTotal => "Total",
-        _ => "Row"
+        BarExtent.ThroughTotal => Loc.T("Total", "Summe"),
+        _ => Loc.T("Row", "Zeile")
     };
 
     private static float ControlWidth(float rowWidth, float wanted) => Math.Min(wanted * ImGuiHelpers.GlobalScale, rowWidth * 0.6f);
+
+    /// <summary>Breite des Reglers: wie gewünscht, aber nie über die Beschriftung links hinweg.</summary>
+    private static float SliderWidth(float rowWidth, float labelWidth) =>
+        Math.Max(80 * ImGuiHelpers.GlobalScale, Math.Min(ControlWidth(rowWidth, 220), rowWidth - labelWidth - 12));
 
     /// <summary>Beschriftung links, Umschaltleiste rechtsbuendig. Bildschirmkoordinaten, weil SameLine in Tabellenspalten spaltenbezogen ist.</summary>
     private static bool SegmentedRow<T>(string label, string id, T[] values, Func<T, string> text, ref T selected, float width, float wanted, string? tooltip = null)
@@ -385,7 +452,12 @@ public sealed class ConfigWindow(
         ImGui.TextUnformatted(label);
         var hovered = ImGui.IsItemHovered();
 
-        var control = ControlWidth(width, wanted);
+        // Längere deutsche Texte bekommen so viel Platz, wie jedes Feld braucht.
+        var widest = 0f;
+        foreach (var value in values)
+            widest = Math.Max(widest, ImGui.CalcTextSize(text(value)).X);
+
+        var control = Math.Min(Math.Max(ControlWidth(width, wanted), (widest + 16) * values.Length), width * 0.8f);
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - control, start.Y));
         var changed = Widgets.Segmented(id, values, text, ref selected, control);
         hovered |= ImGui.IsItemHovered();
@@ -403,7 +475,7 @@ public sealed class ConfigWindow(
         ImGui.TextUnformatted(label);
         var hovered = ImGui.IsItemHovered();
 
-        var control = ControlWidth(width, 220);
+        var control = SliderWidth(width, ImGui.GetItemRectSize().X);
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - control, start.Y));
         ImGui.SetNextItemWidth(control);
         var changed = ImGui.SliderInt($"##{label}", ref value, min, max, format);
@@ -422,7 +494,7 @@ public sealed class ConfigWindow(
         ImGui.TextUnformatted(label);
         var hovered = ImGui.IsItemHovered();
 
-        var control = ControlWidth(width, 220);
+        var control = SliderWidth(width, ImGui.GetItemRectSize().X);
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - control, start.Y));
         ImGui.SetNextItemWidth(control);
         var changed = ImGui.SliderFloat($"##{label}", ref value, min, max, format);

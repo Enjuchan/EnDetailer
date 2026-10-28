@@ -165,10 +165,14 @@ public static class Widgets
 
     /// <summary>
     /// Tabs als Pillen mit Icon im Stil der Status-Markierungen: der aktive Tab gefüllt in Akzentfarbe,
-    /// die anderen mit Rahmen. Gibt zurück, ob ein anderer Tab gewählt wurde.
+    /// die anderen mit Rahmen. Gibt zurück, ob ein anderer Tab gewählt wurde. Passen die Pillen mit Text nicht in die
+    /// verfügbare Breite, zeigen alle nur ihr Icon und den Namen als Tooltip, wie <see cref="IconTabs"/>.
     /// </summary>
     public static bool PillTabs(string id, IReadOnlyList<(FontAwesomeIcon Icon, string Label)> tabs, ref int selected)
     {
+        if (PillTabsWidth(tabs) > ImGui.GetContentRegionAvail().X)
+            return IconTabs(id, tabs, ref selected);
+
         var draw = ImGui.GetWindowDrawList();
         var start = ImGui.GetCursorScreenPos();
         var height = ImGui.GetFrameHeight();
@@ -220,6 +224,20 @@ public static class Widgets
         ImGui.SetCursorScreenPos(start);
         ImGui.Dummy(new Vector2(x - start.X, height));
         return changed;
+    }
+
+    private static float PillTabsWidth(IReadOnlyList<(FontAwesomeIcon Icon, string Label)> tabs)
+    {
+        var width = 0f;
+        foreach (var (icon, label) in tabs)
+        {
+            ImGui.PushFont(UiBuilder.IconFont);
+            var iconWidth = ImGui.CalcTextSize(icon.ToIconString()).X;
+            ImGui.PopFont();
+            width += iconWidth + ImGui.CalcTextSize(label).X + 32 + 8;
+        }
+
+        return width - 8;
     }
 
     /// <summary>
@@ -527,7 +545,7 @@ public static class Widgets
         ImGui.PopFont();
 
         if (crossHovered)
-            ImGui.SetTooltip("Remove");
+            ImGui.SetTooltip(Loc.T("Remove", "Entfernen"));
 
         return removed;
     }
@@ -546,7 +564,8 @@ public static class Widgets
     /// Icon-Knopf, der nur mit gedrückter Shift-Taste auslöst, für Löschen und Zurücksetzen. Mit Shift färbt sich
     /// das Icon rot, damit vor dem Klick sichtbar ist, dass er wirkt.
     /// </summary>
-    public static bool ShiftButton(string id, FontAwesomeIcon icon, string what)
+    /// <param name="what">Die Handlung, die im Satz auf "to" (englisch) und "um" (deutsch) folgt; deutsch also mit "zu" vor dem Verb.</param>
+    public static bool ShiftButton(string id, FontAwesomeIcon icon, LocText what)
     {
         var shift = ImGui.GetIO().KeyShift;
 
@@ -558,7 +577,9 @@ public static class Widgets
         ImGui.PopFont();
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(shift ? $"Click to {what}." : $"Hold Shift to {what}.");
+            ImGui.SetTooltip(shift
+                ? Loc.T($"Click to {what.En}.", $"Klicken, um {what.De}.")
+                : Loc.T($"Hold Shift to {what.En}.", $"Shift halten, um {what.De}."));
 
         return clicked && shift;
     }

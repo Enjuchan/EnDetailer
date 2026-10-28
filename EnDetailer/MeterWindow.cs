@@ -42,19 +42,31 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
     private const float CellPadY = 1f;
     private const float DotRadius = 3.5f;
 
-    private static readonly (FontAwesomeIcon Icon, string Tooltip)[] MetricTabs =
+    private static readonly (FontAwesomeIcon Icon, string Tooltip)[] MetricTabsEn =
     [
         (FontAwesomeIcon.FistRaised, "Damage"),
         (FontAwesomeIcon.Heart, "Healing"),
         (FontAwesomeIcon.ShieldAlt, "Damage taken"),
     ];
 
+    private static readonly (FontAwesomeIcon Icon, string Tooltip)[] MetricTabsDe =
+    [
+        (FontAwesomeIcon.FistRaised, "Schaden"),
+        (FontAwesomeIcon.Heart, "Heilung"),
+        (FontAwesomeIcon.ShieldAlt, "Erlittener Schaden"),
+    ];
+
+    private static (FontAwesomeIcon Icon, string Tooltip)[] MetricTabs =>
+        Loc.Current == Language.German ? MetricTabsDe : MetricTabsEn;
+
     private static readonly string HeartIcon = FontAwesomeIcon.Heartbeat.ToIconString();
 
     private static readonly string[] MetricIcons =
-        [.. Array.ConvertAll(MetricTabs, t => t.Icon.ToIconString())];
+        [.. Array.ConvertAll(MetricTabsEn, t => t.Icon.ToIconString())];
     private static readonly string[] HeaderIds = ["##h0", "##h1", "##h2", "##h3", "##h4"];
     private const string Ellipsis = "…";
+
+    private static string EndedText => Loc.T("ended", "beendet");
 
     /// <summary>Farben als fertige ABGR-Werte, damit nichts davon pro Aufruf umgerechnet wird.</summary>
     private static class Palette
@@ -125,6 +137,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
 
     // Zwischenspeicher, die von der Schriftgroesse abhaengen.
     private float metricsFontSize = -1f;
+    private Language metricsLanguage;
     private float lineHeight;
     private float frameHeight;
     private float heartWidth;
@@ -168,6 +181,8 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
     private long tipShareKey = -1;
     private long tipRateKey = -1;
     private int tipLineCount;
+    private int tipMaxLine = -1;
+    private Language tipLanguage;
     private readonly string[] tipLabels = new string[MaxTipLines];
     private readonly string[] tipValues = new string[MaxTipLines];
     private readonly float[] tipValueWidths = new float[MaxTipLines];
@@ -307,12 +322,12 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
     /// </summary>
     private string FooterLabel => (this.Metric, this.Mode) switch
     {
-        (MeterMetric.Healing, DpsMode.Rolling) => "HPS now",
-        (MeterMetric.Healing, _) => "HPS fight",
-        (MeterMetric.DamageTaken, DpsMode.Rolling) => "DTPS now",
-        (MeterMetric.DamageTaken, _) => "DTPS fight",
-        (_, DpsMode.Rolling) => "DPS now",
-        _ => "DPS fight"
+        (MeterMetric.Healing, DpsMode.Rolling) => Loc.T("HPS now", "HPS jetzt"),
+        (MeterMetric.Healing, _) => Loc.T("HPS fight", "HPS Kampf"),
+        (MeterMetric.DamageTaken, DpsMode.Rolling) => Loc.T("DTPS now", "DTPS jetzt"),
+        (MeterMetric.DamageTaken, _) => Loc.T("DTPS fight", "DTPS Kampf"),
+        (_, DpsMode.Rolling) => Loc.T("DPS now", "DPS jetzt"),
+        _ => Loc.T("DPS fight", "DPS Kampf")
     };
 
     private void SetMetric(MeterMetric metric)
@@ -406,11 +421,13 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         this.lineHeight = ImGui.GetTextLineHeight();
         this.frameHeight = ImGui.GetFrameHeight();
 
+        // Auch ein Sprachwechsel verwirft die Zwischenspeicher: Breiten und Texte hängen vom Wortlaut ab.
         var fontSize = ImGui.GetFontSize();
-        if (fontSize == this.metricsFontSize)
+        if (fontSize == this.metricsFontSize && Loc.Current == this.metricsLanguage)
             return;
 
         this.metricsFontSize = fontSize;
+        this.metricsLanguage = Loc.Current;
 
         for (var i = 0; i < this.rowCells.Length; i++)
             this.rowCells[i].Reset();
@@ -428,7 +445,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         }
 
         this.durationWidth = ImGui.CalcTextSize("00:00").X;
-        this.endedWidth = ImGui.CalcTextSize("ended").X;
+        this.endedWidth = ImGui.CalcTextSize(EndedText).X;
         this.ellipsisWidth = ImGui.CalcTextSize(Ellipsis).X;
 
         (this.heartWidth, this.heartHeight) = IconSize(FontAwesomeIcon.Heartbeat);
@@ -475,12 +492,12 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
     {
         this.columnCount = 0;
         AddColumn(ColumnName, "Name");
-        AddColumn(ColumnTotal, "Total");
+        AddColumn(ColumnTotal, Loc.T("Total", "Summe"));
 
         switch (this.Metric)
         {
             case MeterMetric.Healing:
-                AddColumn(ColumnCrit, "Over");
+                AddColumn(ColumnCrit, Loc.T("Over", "Über"));
                 break;
             case MeterMetric.DamageTaken:
                 break;
@@ -592,7 +609,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         {
             var cogX = right - this.cogWidth;
             ImGui.SetCursorScreenPos(new Vector2(cogX, start.Y));
-            if (Widgets.IconButton("cog", FontAwesomeIcon.Cog, "Settings"))
+            if (Widgets.IconButton("cog", FontAwesomeIcon.Cog, Loc.T("Settings", "Einstellungen")))
                 this.OpenConfigRequested?.Invoke();
 
             var tabsX = cogX - ItemSpacingX - this.tabsWidth;
@@ -608,7 +625,9 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
             // Nur gezeichnet, kein Element: So bleibt der Cursor unberuehrt.
             var reach = new Vector2(DotRadius + 3, DotRadius + 3);
             if (ImGui.IsWindowHovered() && ImGui.IsMouseHoveringRect(center - reach, center + reach))
-                ImGui.SetTooltip(this.Connected ? "IINACT connected" : "Waiting for IINACT…");
+                ImGui.SetTooltip(this.Connected
+                    ? Loc.T("IINACT connected", "IINACT verbunden")
+                    : Loc.T("Waiting for IINACT…", "Warte auf IINACT…"));
 
             if (this.HistoryAvailable)
             {
@@ -616,18 +635,18 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
                 // stehen, damit die Leiste nicht springt.
                 var pairX = limit - ItemSpacingX - this.chevronLeftWidth - ItemSpacingX - this.chevronRightWidth;
                 ImGui.SetCursorScreenPos(new Vector2(pairX, start.Y));
-                if (HistoryButton("older", FontAwesomeIcon.ChevronLeft, "Older fight", this.CanOlder))
+                if (HistoryButton("older", FontAwesomeIcon.ChevronLeft, Loc.T("Older fight", "Älterer Kampf"), this.CanOlder))
                     this.OlderRequested?.Invoke();
 
                 ImGui.SetCursorScreenPos(new Vector2(pairX + this.chevronLeftWidth + ItemSpacingX, start.Y));
-                if (HistoryButton("newer", FontAwesomeIcon.ChevronRight, "Newer fight", this.CanNewer))
+                if (HistoryButton("newer", FontAwesomeIcon.ChevronRight, Loc.T("Newer fight", "Neuerer Kampf"), this.CanNewer))
                     this.NewerRequested?.Invoke();
 
                 limit = pairX;
             }
         }
 
-        // Links: Symbol, Dauer, Titel, bei eingefrorenem Kampf "ended".
+        // Links: Symbol, Dauer, Titel, bei eingefrorenem Kampf "ended" bzw. "beendet".
         var x = start.X;
         ImGui.PushFont(UiBuilder.IconFont);
         draw.AddText(new Vector2(x, start.Y + (rowHeight - this.heartHeight) / 2), Palette.AccentLight, HeartIcon);
@@ -659,7 +678,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         if (tag is not null)
             DrawText(draw, new Vector2(x, textY), Palette.Muted, tag);
         else if (this.Frozen)
-            DrawText(draw, new Vector2(x, textY), Palette.Muted, "ended");
+            DrawText(draw, new Vector2(x, textY), Palette.Muted, EndedText);
 
         ImGui.SetCursorScreenPos(start);
         ImGui.Dummy(new Vector2(right - start.X, rowHeight + 2));
@@ -1197,7 +1216,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
             ImGui.Dummy(new Vector2(width, lh));
 
             // Der Name der Faehigkeit steht leise unter dem Wert.
-            if (this.tipAbility.Length == 0 || !IsMaxLine(this.tipLabels[i]))
+            if (this.tipAbility.Length == 0 || i != this.tipMaxLine)
                 continue;
 
             pos = ImGui.GetCursorScreenPos();
@@ -1208,8 +1227,6 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         ImGui.SetWindowFontScale(1f);
         ImGui.EndTooltip();
     }
-
-    private static bool IsMaxLine(string label) => label is "Max hit" or "Max heal";
 
     /// <summary>Baut Texte und Breiten neu, wenn sich etwas geaendert hat; sonst bleibt alles stehen.</summary>
     private void EnsureTooltip(MeterRow row, CombatantSnapshot detail)
@@ -1224,15 +1241,17 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         var fontSize = ImGui.GetFontSize();
 
         if (ReferenceEquals(detail, this.tipSource) && this.Metric == this.tipMetric
-            && fontSize == this.tipFontSize && shareKey == this.tipShareKey && rateKey == this.tipRateKey)
+            && fontSize == this.tipFontSize && Loc.Current == this.tipLanguage && shareKey == this.tipShareKey && rateKey == this.tipRateKey)
             return;
 
         this.tipSource = detail;
         this.tipMetric = this.Metric;
         this.tipFontSize = fontSize;
+        this.tipLanguage = Loc.Current;
         this.tipShareKey = shareKey;
         this.tipRateKey = rateKey;
         this.tipLineCount = 0;
+        this.tipMaxLine = -1;
         this.tipAbility = string.Empty;
 
         var shareText = FormattableString.Invariant($"{shareKey / 10}.{shareKey % 10}%");
@@ -1241,29 +1260,31 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         switch (this.Metric)
         {
             case MeterMetric.Healing:
-                AddTipLine("Share", shareText);
-                AddTipLine("Fight HPS", rateText);
-                AddTipLine("Max heal", MaxText(detail.MaxHealValue));
-                AddTipLine("Overheal", Percent(detail.OverhealPercent));
-                AddTipLine("Shields", MaxText(detail.ShieldAmount));
-                AddTipLine("Crit heals", Percent(detail.CritHealPercent));
+                AddTipLine(Loc.T("Share", "Anteil"), shareText);
+                AddTipLine(Loc.T("Fight HPS", "HPS im Kampf"), rateText);
+                AddTipLine(Loc.T("Max heal", "Größte Heilung"), MaxText(detail.MaxHealValue));
+                this.tipMaxLine = this.tipLineCount - 1;
+                AddTipLine(Loc.T("Overheal", "Überheilung"), Percent(detail.OverhealPercent));
+                AddTipLine(Loc.T("Shields", "Schilde"), MaxText(detail.ShieldAmount));
+                AddTipLine(Loc.T("Crit heals", "Kritische Heilungen"), Percent(detail.CritHealPercent));
                 if (detail.MaxHealValue > 0)
                     this.tipAbility = detail.MaxHealName;
                 break;
             case MeterMetric.DamageTaken:
-                AddTipLine("Heals taken", MaxText(detail.HealingTaken));
-                AddTipLine("Parry", Percent(detail.ParryPercent));
-                AddTipLine("Block", Percent(detail.BlockPercent));
-                AddTipLine("Deaths", detail.Deaths.ToString(CultureInfo.InvariantCulture));
+                AddTipLine(Loc.T("Heals taken", "Erhaltene Heilung"), MaxText(detail.HealingTaken));
+                AddTipLine(Loc.T("Parry", "Parieren"), Percent(detail.ParryPercent));
+                AddTipLine(Loc.T("Block", "Blocken"), Percent(detail.BlockPercent));
+                AddTipLine(Loc.T("Deaths", "Tode"), detail.Deaths.ToString(CultureInfo.InvariantCulture));
                 break;
             default:
-                AddTipLine("Share", shareText);
-                AddTipLine("Fight DPS", rateText);
-                AddTipLine("Max hit", MaxText(detail.MaxHitValue));
-                AddTipLine("Crit", Percent(detail.CritPercent));
-                AddTipLine("Direct hit", Percent(detail.DirectHitPercent));
-                AddTipLine("Crit DH", Percent(detail.CritDirectHitPercent));
-                AddTipLine("Deaths", detail.Deaths.ToString(CultureInfo.InvariantCulture));
+                AddTipLine(Loc.T("Share", "Anteil"), shareText);
+                AddTipLine(Loc.T("Fight DPS", "DPS im Kampf"), rateText);
+                AddTipLine(Loc.T("Max hit", "Stärkster Treffer"), MaxText(detail.MaxHitValue));
+                this.tipMaxLine = this.tipLineCount - 1;
+                AddTipLine(Loc.T("Crit", "Kritischer Treffer"), Percent(detail.CritPercent));
+                AddTipLine(Loc.T("Direct hit", "Direkter Treffer"), Percent(detail.DirectHitPercent));
+                AddTipLine(Loc.T("Crit DH", "Krit. + Direkt"), Percent(detail.CritDirectHitPercent));
+                AddTipLine(Loc.T("Deaths", "Tode"), detail.Deaths.ToString(CultureInfo.InvariantCulture));
                 if (detail.MaxHitValue > 0)
                     this.tipAbility = detail.MaxHitName;
                 break;
@@ -1330,7 +1351,7 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
             if (this.Deaths != this.footerDeaths)
             {
                 this.footerDeaths = this.Deaths;
-                this.footerDeathsText = "Deaths " + this.Deaths.ToString(CultureInfo.InvariantCulture);
+                this.footerDeathsText = Loc.T("Deaths ", "Tode ") + this.Deaths.ToString(CultureInfo.InvariantCulture);
                 this.footerDeathsWidth = ImGui.CalcTextSize(this.footerDeathsText).X;
             }
 
@@ -1365,18 +1386,18 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
         ImGui.TextColored(Theme.AccentLight, "EnDetailer");
         ImGui.Separator();
 
-        if (MenuEntry("Damage", this.Metric == MeterMetric.Damage))
+        if (MenuEntry(Loc.T("Damage", "Schaden"), this.Metric == MeterMetric.Damage))
             SetMetric(MeterMetric.Damage);
-        if (MenuEntry("Healing", this.Metric == MeterMetric.Healing))
+        if (MenuEntry(Loc.T("Healing", "Heilung"), this.Metric == MeterMetric.Healing))
             SetMetric(MeterMetric.Healing);
-        if (MenuEntry("Damage taken", this.Metric == MeterMetric.DamageTaken))
+        if (MenuEntry(Loc.T("Damage taken", "Erlittener Schaden"), this.Metric == MeterMetric.DamageTaken))
             SetMetric(MeterMetric.DamageTaken);
 
         ImGui.Separator();
 
         if (this.HistoryAvailable)
         {
-            ImGui.TextColored(Theme.Muted, "History");
+            ImGui.TextColored(Theme.Muted, Loc.T("History", "Verlauf"));
 
             if (MenuEntry("Live", this.HistorySelected == FightHistory.LiveIndex))
                 this.SelectRequested?.Invoke(FightHistory.LiveIndex);
@@ -1390,20 +1411,20 @@ public sealed class MeterWindow(Configuration config, ITextureProvider textures)
             ImGui.Separator();
         }
 
-        if (MenuEntry("Now", this.Mode == DpsMode.Rolling))
+        if (MenuEntry(Loc.T("Now", "Jetzt"), this.Mode == DpsMode.Rolling))
             this.Mode = DpsMode.Rolling;
-        if (MenuEntry("Fight", this.Mode == DpsMode.Encounter))
+        if (MenuEntry(Loc.T("Fight", "Kampf"), this.Mode == DpsMode.Encounter))
             this.Mode = DpsMode.Encounter;
 
         ImGui.Separator();
 
-        if (MenuEntry("Lock", false))
+        if (MenuEntry(Loc.T("Lock", "Sperren"), false))
         {
             config.Locked = true;
             config.Save();
         }
 
-        if (MenuEntry("Settings", false))
+        if (MenuEntry(Loc.T("Settings", "Einstellungen"), false))
             this.OpenConfigRequested?.Invoke();
 
         ImGui.PopStyleVar();

@@ -17,14 +17,20 @@ public enum DependencyKind
 public sealed record Dependency(
     string DisplayName,
     string InternalName,
-    string Purpose,
+    LocText Purpose,
     string Website,
     string[] Repositories);
 
 /// <param name="Title">Überschrift im Tab; bei AnyOf kommt die Zahl der geladenen Plugins dazu.</param>
-public sealed record DependencyGroup(string Title, DependencyKind Kind, IReadOnlyList<Dependency> Items);
+public sealed record DependencyGroup(LocText Title, DependencyKind Kind, IReadOnlyList<Dependency> Items);
 
 public enum InstallState { Missing, Installed, Loaded }
+
+/// <summary>Fehler beim Installieren mit Text in beiden Sprachen, damit die Anzeige ihn übersetzen kann.</summary>
+public sealed class InstallException(LocText text) : Exception(text.En)
+{
+    public LocText Text { get; } = text;
+}
 
 /// <summary>
 /// Plugins, mit denen das Plugin zusammenarbeitet, und ihre Installation. Installiert wird wie in Questionable
@@ -42,7 +48,7 @@ public sealed class Dependencies(IDalamudPluginInterface pluginInterface, IPlugi
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> installing = new();
 
     /// <summary>Letzte Meldung pro Plugin für die Anzeige, etwa ein Fehler beim Installieren.</summary>
-    public System.Collections.Concurrent.ConcurrentDictionary<string, string> Messages { get; } = new();
+    public System.Collections.Concurrent.ConcurrentDictionary<string, LocText> Messages { get; } = new();
 
     public bool IsInstalling(Dependency dependency) => installing.ContainsKey(dependency.InternalName);
 
@@ -69,7 +75,7 @@ public sealed class Dependencies(IDalamudPluginInterface pluginInterface, IPlugi
         if (dependency.Repositories.Length == 0 || !installing.TryAdd(dependency.InternalName, true))
             return;
 
-        Messages[dependency.InternalName] = "Installing…";
+        Messages[dependency.InternalName] = new("Installing…", "Installiere…");
         _ = InstallAsync(dependency);
     }
 
@@ -78,13 +84,17 @@ public sealed class Dependencies(IDalamudPluginInterface pluginInterface, IPlugi
         try
         {
             var loaded = await InstallFromRepositoryAsync(dependency).ConfigureAwait(false);
-            Messages[dependency.InternalName] = loaded ? "Installed." : "Installed, but not loaded. Check the plugin installer.";
+            Messages[dependency.InternalName] = loaded
+                ? new("Installed.", "Installiert.")
+                : new("Installed, but not loaded. Check the plugin installer.", "Installiert, aber nicht geladen. Prüfe den Plugin-Installer.");
             log.Information("{Plugin} installiert, geladen: {Loaded}.", dependency.DisplayName, loaded);
         }
         catch (Exception e)
         {
             // Fehler beim Installieren gehören vor den Nutzer, nicht nur ins Log, weil er sonst nur einen hängenden Knopf sieht.
-            Messages[dependency.InternalName] = $"Couldn't install: {e.GetBaseException().Message}";
+            var baseException = e.GetBaseException();
+            var reason = baseException is InstallException known ? known.Text : new LocText(baseException.Message, baseException.Message);
+            Messages[dependency.InternalName] = new($"Couldn't install: {reason.En}", $"Installieren fehlgeschlagen: {reason.De}");
             log.Error(e, "Installieren von {Plugin} fehlgeschlagen.", dependency.DisplayName);
         }
         finally
@@ -99,10 +109,10 @@ public sealed class Dependencies(IDalamudPluginInterface pluginInterface, IPlugi
 
         var manifests = await DalamudReflector.GetPluginMaster(repoUrl).ConfigureAwait(false);
         if (manifests is null || manifests.Count == 0)
-            throw new InvalidOperationException($"No plugins found in {repoUrl}.");
+            throw new InstallException(new($"No plugins found in {repoUrl}.", $"Keine Plugins in {repoUrl} gefunden."));
 
         var manifest = manifests.FirstOrDefault(m => string.Equals((string)m.GetFoP("InternalName"), dependency.InternalName, StringComparison.Ordinal))
-            ?? throw new InvalidOperationException($"{dependency.DisplayName} isn't listed in {repoUrl}.");
+            ?? throw new InstallException(new($"{dependency.DisplayName} isn't listed in {repoUrl}.", $"{dependency.DisplayName} steht nicht in {repoUrl}."));
 
         // Das Haupt-Repository ist immer da; als Fremd-Repository eingetragen würde es doppelt geführt.
         if (repoUrl != MainRepository && !DalamudReflector.HasRepo(repoUrl))
@@ -116,10 +126,10 @@ public sealed class Dependencies(IDalamudPluginInterface pluginInterface, IPlugi
             .Where(m => m.Name == "InstallPluginAsync")
             .OrderBy(m => m.GetParameters().Length)
             .FirstOrDefault()
-            ?? throw new MissingMethodException("Dalamud's PluginManager.InstallPluginAsync wasn't found.");
+            ?? throw new InstallException(new("Dalamud's PluginManager.InstallPluginAsync wasn't found.", "Dalamuds PluginManager.InstallPluginAsync wurde nicht gefunden."));
 
         if (install.Invoke(pluginManager, BindArguments(install, manifest)) is not Task task)
-            throw new InvalidOperationException("InstallPluginAsync didn't return a task.");
+            throw new InstallException(new("InstallPluginAsync didn't return a task.", "InstallPluginAsync hat keinen Task geliefert."));
 
         await task.ConfigureAwait(false);
         var result = task.GetFoP("Result");

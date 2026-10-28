@@ -52,7 +52,7 @@ public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window, Fu
     public string Summary()
     {
         if (samples.Count == 0)
-            return $"{name}: no data yet";
+            return Loc.T($"{name}: no data yet", $"{name}: noch keine Daten");
 
         var total = 0.0;
         var max = 0.0;
@@ -62,6 +62,6 @@ public sealed class FrameTiming(IPluginLog log, string name, TimeSpan window, Fu
             max = Math.Max(max, ms);
         }
 
-        return $"{name}: avg {total / samples.Count:0.000} ms, max {max:0.000} ms";
+        return Loc.T($"{name}: avg {total / samples.Count:0.000} ms, max {max:0.000} ms", $"{name}: Mittel {total / samples.Count:0.000} ms, max {max:0.000} ms");
     }
 }

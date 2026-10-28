@@ -89,6 +89,9 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Anzeigemodus der DPS-Spalte: gleitend (Now) oder ueber den ganzen Kampf (Fight).</summary>
     public DpsMode Mode { get; set; } = DpsMode.Rolling;
 
+    /// <summary>Gewählte Sprache ("de" oder "en"); null heißt wie Dalamud.</summary>
+    public string? Language { get; set; }
+
     private IDalamudPluginInterface? pluginInterface;
 
     public void Initialize(IDalamudPluginInterface pi)

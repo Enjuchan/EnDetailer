@@ -6,15 +6,16 @@ namespace EnDetailer;
 /// <summary>Angaben für den About-Tab; Wirkung der Befehle steht auch als Hilfetext im Befehl selbst.</summary>
 public static class EnDetailerAbout
 {
-    public const string ToggleEffect = "Shows or hides the meter.";
-    public const string ConfigEffect = "Opens the settings.";
-    public const string LockEffect = "Locks or unlocks the meter window.";
-    public const string PreviewEffect = "Starts or stops the made-up party.";
+    public static readonly LocText ToggleEffect = new("Shows or hides the meter.", "Zeigt oder versteckt das Meter.");
+    public static readonly LocText ConfigEffect = new("Opens the settings.", "Öffnet die Einstellungen.");
+    public static readonly LocText LockEffect = new("Locks or unlocks the meter window.", "Sperrt oder entsperrt das Meter-Fenster.");
+    public static readonly LocText PreviewEffect = new("Starts or stops the made-up party.", "Startet oder beendet die erfundene Gruppe.");
 
     public static AboutInfo Create(string version) => new(
         "EnDetailer",
         version,
-        "EnDetailer reads combat data from IINACT and shows the damage you are actually dealing right now, as a real-time value instead of the whole-fight average.",
+        new("EnDetailer reads combat data from IINACT and shows the damage you are actually dealing right now, as a real-time value instead of the whole-fight average.",
+            "EnDetailer liest Kampfdaten aus IINACT und zeigt den Schaden, den du gerade wirklich machst, als Echtzeitwert statt als Durchschnitt über den ganzen Kampf."),
         [
             new("/endetailer", ToggleEffect),
             new("/endetailer config", ConfigEffect),
@@ -23,5 +24,5 @@ public static class EnDetailerAbout
         ],
         "AGPL-3.0",
         "EnDetailer - Copyright (c) 2026 Enjuchan",
-        [new("Open GitHub", FontAwesomeIcon.ExternalLinkAlt, "https://github.com/Enjuchan/EnDetailer")]);
+        [new(new("Open GitHub", "GitHub öffnen"), FontAwesomeIcon.ExternalLinkAlt, "https://github.com/Enjuchan/EnDetailer")]);
 }

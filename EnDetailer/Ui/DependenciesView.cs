@@ -19,14 +19,17 @@ public static class DependenciesView
                 ImGui.Spacing();
             first = false;
 
+            var loaded = group.Items.Count(d => dependencies.StateOf(d).State == InstallState.Loaded);
             var title = group.Kind == DependencyKind.AnyOf
-                ? $"{group.Title} · at least one · {group.Items.Count(d => dependencies.StateOf(d).State == InstallState.Loaded)} loaded"
-                : group.Title;
+                ? Loc.T($"{group.Title.En} · at least one · {loaded} loaded", $"{group.Title.De} · mindestens eins · {loaded} geladen")
+                : group.Title.ToString();
             DrawGroup(dependencies, group, title);
         }
 
         ImGui.Spacing();
-        ImGui.TextColored(Theme.Muted, "Install adds the plugin's repository to Dalamud if it's missing and installs from there.");
+        ImGui.TextColored(Theme.Muted, Loc.T(
+            "Install adds the plugin's repository to Dalamud if it's missing and installs from there.",
+            "Installieren trägt das Repository des Plugins in Dalamud ein, falls es fehlt, und installiert von dort."));
     }
 
     private static void DrawGroup(Dependencies dependencies, DependencyGroup group, string title)
@@ -61,21 +64,22 @@ public static class DependenciesView
                 ImGui.TextColored(color, StateText(group.Kind, state));
 
                 ImGui.SetCursorScreenPos(origin + new Vector2(28, ImGui.GetTextLineHeight() + 4));
-                ImGui.TextColored(Theme.Muted, message ?? dependency.Purpose);
+                ImGui.TextColored(Theme.Muted, (message.Equals(default(LocText)) ? dependency.Purpose : message).ToString());
 
                 // Knöpfe rechtsbündig in der ersten Zeile.
-                var buttons = new List<(string Label, Action Click)> { ("Website", () => Dalamud.Utility.Util.OpenLink(dependency.Website)) };
+                var buttons = new List<(string Label, Action Click, bool Installs)> { ("Website", () => Dalamud.Utility.Util.OpenLink(dependency.Website), false) };
                 if (group.Kind != DependencyKind.Conflict && state != InstallState.Loaded && dependency.Repositories.Length > 0)
-                    buttons.Insert(0, (state == InstallState.Installed ? "Open installer" : "Install", () => dependencies.Install(dependency)));
+                    buttons.Insert(0, (state == InstallState.Installed ? Loc.T("Open installer", "Installer öffnen") : Loc.T("Install", "Installieren"),
+                        () => dependencies.Install(dependency), state != InstallState.Installed));
 
                 var x = right;
-                foreach (var (label, _) in buttons)
+                foreach (var (label, _, _) in buttons)
                     x -= ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 6;
 
                 ImGui.SetCursorScreenPos(new Vector2(x, origin.Y - 3));
-                foreach (var (label, click) in buttons)
+                foreach (var (label, click, installs) in buttons)
                 {
-                    var busy = label == "Install" && dependencies.IsInstalling(dependency);
+                    var busy = installs && dependencies.IsInstalling(dependency);
                     ImGui.BeginDisabled(busy);
                     if (ImGui.Button($"{label}##{dependency.InternalName}"))
                         click();
@@ -93,10 +97,10 @@ public static class DependenciesView
 
     private static string StateText(DependencyKind kind, InstallState state) => (kind, state) switch
     {
-        (DependencyKind.Conflict, InstallState.Loaded) => "loaded",
-        (DependencyKind.Conflict, _) => "not loaded",
-        (_, InstallState.Loaded) => "loaded",
-        (_, InstallState.Installed) => "installed, turned off",
-        _ => "missing",
+        (DependencyKind.Conflict, InstallState.Loaded) => Loc.T("loaded", "geladen"),
+        (DependencyKind.Conflict, _) => Loc.T("not loaded", "nicht geladen"),
+        (_, InstallState.Loaded) => Loc.T("loaded", "geladen"),
+        (_, InstallState.Installed) => Loc.T("installed, turned off", "installiert, ausgeschaltet"),
+        _ => Loc.T("missing", "fehlt"),
     };
 }
