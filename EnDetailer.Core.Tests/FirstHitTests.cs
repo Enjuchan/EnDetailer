@@ -13,7 +13,7 @@ public class FirstHitTests
     private static readonly DateTime T0 = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     [Fact]
-    public void WeightedDps_HasAValueWhenStartAndFirstHitShareATimestamp()
+    public void CurrentRate_HasAValueWhenStartAndFirstHitShareATimestamp()
     {
         var tracker = new RollingDpsTracker();
 
@@ -25,23 +25,7 @@ public class FirstHitTests
         tracker.MarkEncounterStart(T0);
         tracker.Record("Spieler", 5000, T0);
 
-        var dps = tracker.GetWeightedDps("Spieler", T0, TimeSpan.FromSeconds(25));
-
-        Assert.True(dps > 0, $"DPS war {dps}");
-    }
-
-    [Fact]
-    public void FlatWindow_HasAValueWhenStartAndFirstHitShareATimestamp()
-    {
-        var tracker = new RollingDpsTracker();
-
-        tracker.Record("Spieler", 0, T0.AddSeconds(-2));
-        tracker.Record("Spieler", 0, T0.AddSeconds(-1));
-
-        tracker.MarkEncounterStart(T0);
-        tracker.Record("Spieler", 5000, T0);
-
-        var dps = tracker.GetRollingDps("Spieler", T0, TimeSpan.FromSeconds(25), T0);
+        var dps = tracker.GetCurrentRate("Spieler", T0, TimeSpan.FromSeconds(10), T0);
 
         Assert.True(dps > 0, $"DPS war {dps}");
     }
@@ -56,7 +40,7 @@ public class FirstHitTests
         tracker.MarkEncounterStart(T0);
         tracker.Record("Spieler", 5000, T0);
 
-        var dps = tracker.GetWeightedDps("Spieler", T0, TimeSpan.FromSeconds(25));
+        var dps = tracker.GetCurrentRate("Spieler", T0, TimeSpan.FromSeconds(10), T0);
 
         Assert.True(dps > 0, $"DPS war {dps}");
     }
@@ -70,7 +54,7 @@ public class FirstHitTests
         tracker.Record("Spieler", 5000, T0);
         tracker.Record("Nachzuegler", 3000, T0.AddSeconds(4));
 
-        var dps = tracker.GetWeightedDps("Nachzuegler", T0.AddSeconds(4), TimeSpan.FromSeconds(25));
+        var dps = tracker.GetCurrentRate("Nachzuegler", T0.AddSeconds(4), TimeSpan.FromSeconds(10), T0);
 
         Assert.True(dps > 0, $"DPS war {dps}");
     }

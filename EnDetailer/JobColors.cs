@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using EnDetailer.Core;
 
@@ -52,16 +51,6 @@ public static class JobColors
 
     /// <summary>Gedaempfte Fassung fuer die Balken hinter den Namen.</summary>
     public static uint Bar(Job job, byte alpha) => ToAbgr(Rgb.GetValueOrDefault(job, UnknownRgb), alpha);
-
-    /// <summary>Aufgehellte Fassung fuer die Leuchtkante am Balkenende.</summary>
-    public static uint Glow(Job job)
-    {
-        var rgb = Rgb.GetValueOrDefault(job, UnknownRgb);
-        var r = Math.Min(255, ((rgb >> 16) & 0xFF) + 70);
-        var g = Math.Min(255, ((rgb >> 8) & 0xFF) + 70);
-        var b = Math.Min(255, (rgb & 0xFF) + 70);
-        return ToAbgr((r << 16) | (g << 8) | b, 0xB0);
-    }
 
     private static uint ToAbgr(uint rgb, byte alpha)
     {

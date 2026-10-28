@@ -11,6 +11,7 @@ public class EncounterTrackerTests
         public bool InCombat { get; set; }
         public bool InCutscene { get; set; }
         public uint ZoneId { get; set; }
+        public bool InDuty { get; set; }
     }
 
     [Fact]

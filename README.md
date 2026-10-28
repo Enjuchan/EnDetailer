@@ -12,12 +12,12 @@ minutes that value barely moves. You can stop attacking entirely and it still re
 `16K` half a minute later. As a live display it tells you nothing, because it cannot
 fall.
 
-EnDetailer averages over a **rolling time window** instead. Stop attacking and the value
-drops. Burst and it climbs. In a real fight you see roughly 20K during burst, 10K during
-downtime and something in between while your rotation runs — all in the same fight where
-a conventional meter shows a flat 16K.
+EnDetailer shows a **real-time value** instead. Stop attacking and it drops. Burst and it
+climbs. In a real fight you see roughly 20K during burst, 10K during downtime and
+something in between while your rotation runs — all in the same fight where a
+conventional meter shows a flat 16K.
 
-The encounter average is still there, one dropdown away, because it answers a different
+The fight average is still there, one click away, because it answers a different
 question: how the fight went overall, comparable to what everyone else posts.
 
 ## Requirements
@@ -47,29 +47,39 @@ as well, so only one plugin cuts encounters.
 
 ## Features
 
-- **Rolling DPS** over a configurable window (5–120 s, default 25 s)
-- **Two weighting modes** — a flat window, or a weighted one where recent damage counts
-  more and older damage fades out instead of dropping off a cliff
+- **Real-time DPS** that rises with burst and falls when you stop, with an adjustable
+  reaction time (4–30 s, default 10 s)
+- **Fight average** as an alternative view, calculated like ACT and FFLogs
+- **Damage, healing and damage taken**, switchable from the window header
+- **Fight graph** — a slim line of the party's real-time value across the fight, so
+  burst windows show up as peaks
+- **Details on hover** — share, fight DPS, biggest hit with its ability, crit, direct hit
+  and crit direct hit; matching values for healing and damage taken
+- **History of the last ten fights**, browsable from the header or the right-click menu
 - **Encounters survive cutscenes**, boss phases and downtime. The fight ends when you
   are actually out of combat, not when the game briefly says so
-- **Numbers freeze** when the fight ends and reset only when the next one begins
-- **Sortable table** — name, total damage, crit rate, direct hit rate, DPS
-- Job colours and icons, own row highlighted, adjustable transparency, accent colour,
-  lockable click-through window
+- **Numbers freeze** at the last hit when the fight ends and reset only when the next one
+  begins
+- **Show it when you want it** — always, in combat (with a short linger), or in duties
+  only; optionally hidden in cutscenes. Never on the title or loading screens
+- **Sortable table**, job colours and icons, own row highlighted, adjustable
+  transparency, lockable click-through window
+- **Preview** with a made-up party to set up the look without a fight
 
 ## Using it
 
-**Right-click anywhere in the window** for the menu: switch between damage, healing and
-damage taken, and choose whether the rate is averaged over the last few seconds or the
-whole encounter. Which one is active is always visible in the last column header — DPS,
-HPS or DTPS.
+The icons in the window header switch between damage, healing and damage taken. The
+arrows next to them step through earlier fights. The gear opens the settings.
+
+**Right-click anywhere in the window** for the menu: measure, real-time or fight average,
+history, lock and settings.
 
 **Click a column header** to sort by it, click again to reverse. The bar length follows
-whatever you sorted by.
+whatever you sorted by. **Hover a row** for that player's details.
 
-The gear icon opens the settings. If you lock the window it becomes click-through, which
-means the right-click menu is unavailable until you unlock it again — `/endetailer lock`
-toggles that.
+If you lock the window it becomes click-through, so buttons and the menu are unavailable
+until you unlock it — `/endetailer lock` toggles that. The header still shows which
+measure is active.
 
 ## Commands
 
@@ -77,14 +87,15 @@ toggles that.
 |---|---|
 | `/endetailer` | Show or hide the meter |
 | `/endetailer config` | Open settings |
-| `/endetailer lock` | Lock the window (click-through, no title bar) |
+| `/endetailer lock` | Lock the window (click-through) |
+| `/endetailer preview` | Fill the meter with a made-up party |
 
 ## A note on accuracy
 
-The rolling value is computed from IINACT's per-second snapshots. Everything shown is
-measured — nothing is estimated, predicted or smoothed into the numbers themselves. The
-optional easing settings only affect how the display *moves* towards a value, never the
-value itself.
+Everything is computed from IINACT's per-second snapshots; nothing is estimated or
+predicted. The real-time value is a smoothed rate: each hit fades in and out over the
+reaction time instead of jumping, which keeps the number readable without hiding a
+burst. The fight average is unsmoothed — total divided by the time up to the last hit.
 
 ## Building
 

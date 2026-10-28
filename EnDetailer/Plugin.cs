@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using EnDetailer.Core;
+using EnDetailer.Ui;
 
 namespace EnDetailer;
 
@@ -29,8 +32,34 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Configuration config;
     private readonly ConfigWindow configWindow;
 
+    private readonly MeterVisibility visibility;
+    private readonly FrameTiming drawTiming;
+    private readonly FrameTiming updateTiming;
+    private readonly Stopwatch stopwatch = new();
+
+    private PreviewCombat? preview;
+    private DateTime lastPreviewSnapshot = DateTime.MinValue;
+    private DateTime lastDiagnostics = DateTime.MinValue;
+
+    // UpdateRows laeuft jeden Frame und vom IPC-Thread aus; die Zeilenliste wird deshalb
+    // wiederverwendet und der Zugriff gesperrt. Das Fenster kopiert sie beim Uebernehmen.
+    private readonly object rowsGate = new();
+    private readonly List<MeterRow> rowBuffer = [];
+    private int lastDurationSecond = -1;
+
     private CombatSnapshot? lastSnapshot;
     private MeterMetric renderedMetric = MeterMetric.Damage;
+    private DpsMode renderedMode = DpsMode.Rolling;
+
+    // Verlauf: gezeigt wird entweder Live (shownRecord null) oder ein Eintrag, dessen Zeilen
+    // einmal ins Fenster uebernommen werden. Waehrenddessen rechnet UpdateRows nicht.
+    private readonly FightHistory history = new();
+
+    // Verlauf des laufenden Kampfes; das Fenster zeigt ihn in der Live-Ansicht.
+    private readonly FightGraph liveGraph = new();
+    private FightRecord? shownRecord;
+    private bool liveStale;
+    private int shownHistoryVersion = -1;
     private DateTime lastConnectAttempt = DateTime.MinValue;
     private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(5);
 
@@ -54,30 +83,39 @@ public sealed class Plugin : IDalamudPlugin
 
         this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         this.config.Initialize(pluginInterface);
+        Widgets.Init(textures);
 
         this.conditions = new GameConditions(condition, clientState);
+        this.visibility = new MeterVisibility(this.conditions);
+        this.drawTiming = new FrameTiming(log, "Meter draw", TimeSpan.FromSeconds(5));
+        this.updateTiming = new FrameTiming(log, "Row update", TimeSpan.FromSeconds(5));
         this.encounters = new EncounterTracker(this.conditions)
         {
             GracePeriod = TimeSpan.FromSeconds(this.config.GraceSeconds),
             ResetOnZoneChange = this.config.ResetOnZoneChange
         };
 
-        this.configWindow = new ConfigWindow(this.config, this.encounters);
-        this.window = new MeterWindow(this.config, textures, pluginInterface.UiBuilder);
+        this.configWindow = new ConfigWindow(this.config, this.encounters, pluginInterface, () => this.source?.IsConnected ?? false);
+        this.window = new MeterWindow(this.config, textures);
         this.window.OpenConfigRequested = OpenConfig;
+        this.window.OlderRequested = this.history.GoOlder;
+        this.window.NewerRequested = this.history.GoNewer;
+        this.window.SelectRequested = this.history.Select;
         this.encounters.EncounterStarted += () =>
         {
+            this.history.LiveStarted();
+            this.liveGraph.Reset();
             var at = this.encounters.StartedAt ?? DateTime.UtcNow;
             this.rollingDamage.MarkEncounterStart(at);
             this.rollingHealing.MarkEncounterStart(at);
             this.rollingTaken.MarkEncounterStart(at);
         };
-        this.encounters.EncounterStarted += () => this.window.ResetSmoothing();
+        this.encounters.EncounterEnded += CaptureFight;
         this.encounters.EncounterEnded += OnEncounterEnded;
         this.encounters.EncounterEnded += RebuildFrozenRows;
 
         this.source = new IinactSource(pluginInterface, log);
-        this.source.SnapshotReceived += OnSnapshot;
+        this.source.SnapshotReceived += OnIinactSnapshot;
 
         // Kein Verbindungsversuch im Konstruktor: Beim Spielstart laden alle
         // Plugins gleichzeitig, und IINACT ist dann meist noch nicht bereit.
@@ -85,15 +123,44 @@ public sealed class Plugin : IDalamudPlugin
 
         this.commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Toggles the EnDetailer window. Use \'config\' or \'lock\' as arguments."
+            HelpMessage = "Toggles the EnDetailer window. Use \'config\', \'lock\' or \'preview\' as arguments."
         });
 
         this.framework.Update += OnFrameworkUpdate;
-        this.pluginInterface.UiBuilder.Draw += this.window.Draw;
+        this.pluginInterface.UiBuilder.Draw += DrawMeter;
         this.pluginInterface.UiBuilder.Draw += this.configWindow.Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi += OpenMain;
         this.log.Information("EnDetailer loaded.");
+    }
+
+    /// <summary>
+    /// Zeichnet das Meter nur im Spiel, nicht auf dem Titelbildschirm und nicht in
+    /// Ladebildschirmen. Das Einstellungsfenster haengt bewusst nicht daran, damit
+    /// es auch vor dem Login aus dem Installer heraus aufgeht.
+    /// </summary>
+    private void DrawMeter()
+    {
+        if (!this.conditions.CanShowOverlay)
+            return;
+
+        this.visibility.Mode = this.config.ShowMode;
+        this.visibility.AfterCombat = TimeSpan.FromSeconds(this.config.ShowAfterCombatSeconds);
+        this.visibility.HideInCutscenes = this.config.HideInCutscenes;
+        if (!this.visibility.IsVisible(DateTime.UtcNow))
+            return;
+
+        this.stopwatch.Restart();
+        this.window.Draw();
+        this.drawTiming.Add(this.stopwatch.Elapsed);
+
+        // Der Text braucht Auswertung und Zeichenketten; zweimal je Sekunde genuegt und
+        // verfaelscht die Messung nicht.
+        if (this.config.ShowDiagnostics && DateTime.UtcNow - this.lastDiagnostics >= TimeSpan.FromMilliseconds(500))
+        {
+            this.lastDiagnostics = DateTime.UtcNow;
+            this.window.DiagnosticsText = $"{this.drawTiming.Summary()} | {this.updateTiming.Summary()}";
+        }
     }
 
     private void OnCommand(string command, string args)
@@ -103,6 +170,12 @@ public sealed class Plugin : IDalamudPlugin
         if (arg.Equals("config", StringComparison.OrdinalIgnoreCase))
         {
             OpenConfig();
+            return;
+        }
+
+        if (arg.Equals("preview", StringComparison.OrdinalIgnoreCase))
+        {
+            this.configWindow.Preview = !this.configWindow.Preview;
             return;
         }
 
@@ -157,8 +230,10 @@ public sealed class Plugin : IDalamudPlugin
             this.source.Start();
         }
 
+        UpdatePreview(now);
+
         this.encounters.Tick(now);
-        this.window.Connected = this.source.IsConnected;
+        this.window.Connected = this.preview is not null || this.source.IsConnected;
         this.window.LocalPlayerName = this.source.LocalPlayerName;
 
         // Nur hier darf der Spielzustand gelesen werden, deshalb den Namen von
@@ -167,19 +242,53 @@ public sealed class Plugin : IDalamudPlugin
 
         this.window.Frozen = this.encounters.State == EncounterState.Ended;
 
+        RecordGraph(now);
+        SyncHistoryView();
+
+        var selectedRecord = this.history.Selected;
+        this.window.Graph = selectedRecord is not null
+            ? selectedRecord.GraphFor(this.window.Metric)
+            : this.liveGraph.For(this.window.Metric);
+
+        if (selectedRecord is { } record)
+        {
+            // Ein Eintrag steht still; neu uebernommen wird nur bei anderem Eintrag, Messgroesse
+            // oder Zeitbasis.
+            if (!ReferenceEquals(record, this.shownRecord)
+                || this.window.Metric != this.renderedMetric
+                || this.window.Mode != this.renderedMode)
+                ShowRecord(record);
+
+            return;
+        }
+
+        if (this.shownRecord is not null)
+        {
+            this.shownRecord = null;
+            this.liveStale = true;
+            this.lastDurationSecond = -1;
+        }
+
         if (this.encounters.State == EncounterState.Running)
         {
             // Zwischen den Datenpaketen weiterrechnen, damit der Verlauf stetig bleibt.
             this.renderedMetric = this.window.Metric;
+            this.renderedMode = this.window.Mode;
+            this.liveStale = false;
 
             if (this.lastSnapshot is { } snapshot)
+            {
+                this.stopwatch.Restart();
                 UpdateRows(snapshot, now);
+                this.updateTiming.Add(this.stopwatch.Elapsed);
+            }
         }
-        else if (this.window.Metric != this.renderedMetric)
+        else if (this.liveStale || this.window.Metric != this.renderedMetric || this.window.Mode != this.renderedMode)
         {
-            // Nach Kampfende stehen die Zahlen still - beim Wechsel der Metrik muessen
-            // sie aber einmal neu gebaut werden, sonst zeigt die Tabelle weiter die
-            // Werte der Metrik, die beim Einfrieren aktiv war.
+            // Nach Kampfende stehen die Zahlen still - beim Wechsel der Metrik oder Zeitbasis
+            // und bei der Rueckkehr aus dem Verlauf muessen sie aber einmal neu gebaut werden,
+            // sonst zeigt die Tabelle weiter den Stand von vorher.
+            this.liveStale = false;
             RebuildFrozenRows();
         }
 
@@ -188,9 +297,39 @@ public sealed class Plugin : IDalamudPlugin
         // korrigiert - so macht es ACT auch, und nur so passt die angezeigte Zeit
         // zum Encounter-DPS, der ohnehin damit rechnet. Sonst stuende dort eine
         // Dauer, die die Karenzzeit mitzaehlt, und die Rechnung ginge nicht auf.
-        this.window.HeaderDuration = this.encounters.State == EncounterState.Running
-            ? this.encounters.Duration.ToString(@"mm\:ss")
-            : this.encounters.ActiveDuration.ToString(@"mm\:ss");
+        // Der Text aendert sich nur einmal je Sekunde, gebaut wird er auch nur dann.
+        var shown = this.encounters.State == EncounterState.Running
+            ? this.encounters.Duration
+            : this.encounters.ActiveDuration;
+        var shownSecond = (int)shown.TotalSeconds;
+        if (shownSecond != this.lastDurationSecond)
+        {
+            this.lastDurationSecond = shownSecond;
+            this.window.HeaderDuration = shown.ToString(@"mm\:ss");
+        }
+    }
+
+    /// <summary>
+    /// Traegt einmal je Sekunde Kampfzeit die Summe der Echtzeitwerte ein. Hier und nicht im Zeichnen,
+    /// damit die Rechnung vom Frametakt unabhaengig bleibt; die Vorpruefung kostet sonst nichts.
+    /// Laeuft auch, wenn das Fenster einen Verlaufseintrag zeigt, damit der Live-Kampf nicht luecken bekommt.
+    /// </summary>
+    private void RecordGraph(DateTime now)
+    {
+        if (this.encounters.State != EncounterState.Running || this.lastSnapshot is not { } snapshot)
+            return;
+
+        var elapsed = this.encounters.Duration;
+        if (!this.liveGraph.Due(elapsed))
+            return;
+
+        var start = this.encounters.StartedAt ?? snapshot.At;
+        var reaction = TimeSpan.FromSeconds(this.config.ReactionSeconds);
+        this.liveGraph.Add(
+            elapsed,
+            MeterRows.RateSum(snapshot, this.rollingDamage, now, start, reaction),
+            MeterRows.RateSum(snapshot, this.rollingHealing, now, start, reaction),
+            MeterRows.RateSum(snapshot, this.rollingTaken, now, start, reaction));
     }
 
     /// <summary>
@@ -204,11 +343,164 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void RebuildFrozenRows()
     {
+        this.renderedMetric = this.window.Metric;
+        this.renderedMode = this.window.Mode;
+
         if (this.lastSnapshot is not { } frozen)
+        {
+            ClearRows();
+            return;
+        }
+
+        UpdateRows(frozen, this.encounters.LastDamageAt ?? frozen.At);
+    }
+
+    private RollingDpsTracker TrackerFor(MeterMetric metric) => metric switch
+    {
+        MeterMetric.Healing => this.rollingHealing,
+        MeterMetric.DamageTaken => this.rollingTaken,
+        _ => this.rollingDamage
+    };
+
+    /// <summary>
+    /// Nimmt den soeben beendeten Kampf in den Verlauf auf, mit denselben Zeilen wie die
+    /// eingefrorene Anzeige: zum Zeitpunkt des letzten Treffers, fuer alle Messgroessen.
+    /// </summary>
+    private void CaptureFight()
+    {
+        // Die Karenzzeit gehoert nicht zum Verlauf: Die Live-Ansicht friert auf demselben Stand ein
+        // wie der Eintrag, der gleich davon kopiert wird.
+        this.liveGraph.Truncate(this.encounters.ActiveDuration);
+
+        if (this.lastSnapshot is not { } snapshot)
             return;
 
-        this.renderedMetric = this.window.Metric;
-        UpdateRows(frozen, this.encounters.LastDamageAt ?? frozen.At);
+        var at = this.encounters.LastDamageAt ?? snapshot.At;
+        var record = FightRecord.Capture(
+            snapshot,
+            at,
+            this.encounters.StartedAt ?? snapshot.At,
+            this.encounters.EndedAt ?? at,
+            this.encounters.ActiveDuration,
+            TimeSpan.FromSeconds(this.config.ReactionSeconds),
+            this.rollingDamage,
+            this.rollingHealing,
+            this.rollingTaken,
+            this.liveGraph);
+
+        this.history.Add(record);
+    }
+
+    /// <summary>Uebernimmt die gespeicherten Werte eines Eintrags ins Fenster; laeuft nur bei Aenderung.</summary>
+    private void ShowRecord(FightRecord record)
+    {
+        lock (this.rowsGate)
+        {
+            this.shownRecord = record;
+            this.renderedMetric = this.window.Metric;
+            this.renderedMode = this.window.Mode;
+
+            var rows = record.For(this.window.Metric);
+            this.window.SetRows(rows.Rows);
+            this.window.HeaderTitle = record.Title;
+            this.window.HeaderDuration = record.ActiveDuration.ToString(@"mm\:ss");
+            this.window.Deaths = record.Deaths;
+            this.window.TotalDps = rows.Sum(this.window.Mode == DpsMode.Rolling);
+        }
+    }
+
+    private void ClearRows()
+    {
+        lock (this.rowsGate)
+        {
+            this.window.SetRows([]);
+            this.window.TotalDps = 0;
+            this.window.Deaths = 0;
+            this.window.HeaderTitle = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Gibt Knoepfen und Menue den Stand des Verlaufs weiter. Texte entstehen nur, wenn sich der
+    /// Verlauf geaendert hat; die Version wird vor dem Lesen gemerkt, damit eine Aenderung
+    /// dazwischen im naechsten Frame nachgezogen wird.
+    /// </summary>
+    private void SyncHistoryView()
+    {
+        var version = this.history.Version;
+        if (version == this.shownHistoryVersion)
+            return;
+
+        this.shownHistoryVersion = version;
+
+        var count = this.history.Count;
+        var selected = this.history.SelectedIndex;
+        var first = this.history.FirstBrowsable;
+
+        var labels = new string[count];
+        for (var i = 0; i < count; i++)
+        {
+            var entry = this.history[i];
+            var title = entry.Title.Length > 0 ? entry.Title : "Fight";
+            labels[i] = $"{title}  {entry.ActiveDuration:mm\\:ss}##fight{i}";
+        }
+
+        this.window.HistoryLabels = labels;
+        this.window.HistoryFirst = first;
+        this.window.HistorySelected = selected;
+        this.window.HistoryAvailable = count > first || selected >= 0;
+        this.window.HistoryText = selected >= 0 ? $"{selected + 1}/{count}" : null;
+        this.window.CanOlder = this.history.CanGoOlder;
+        this.window.CanNewer = this.history.CanGoNewer;
+    }
+
+    private void OnIinactSnapshot(CombatSnapshot snapshot)
+    {
+        // Waehrend der Vorschau wuerden echte Daten den erfundenen Kampf durchmischen.
+        if (this.preview is not null)
+            return;
+
+        OnSnapshot(snapshot);
+    }
+
+    /// <summary>
+    /// Startet oder beendet die Vorschau, wenn der Schalter umgelegt wurde, und
+    /// liefert waehrend sie laeuft einmal je Sekunde ein Datenpaket - im Takt von
+    /// IINACT, damit die Rechnung genauso belastet wird wie im echten Kampf.
+    /// </summary>
+    private void UpdatePreview(DateTime now)
+    {
+        var wanted = this.configWindow.Preview;
+        if (wanted != (this.preview is not null))
+        {
+            this.conditions.Preview = wanted;
+            ResetAll();
+            this.preview = wanted
+                ? new PreviewCombat(now, this.playerState.IsLoaded ? this.playerState.CharacterName : null)
+                : null;
+            this.lastPreviewSnapshot = DateTime.MinValue;
+        }
+
+        if (this.preview is null || now - this.lastPreviewSnapshot < TimeSpan.FromSeconds(1))
+            return;
+
+        this.lastPreviewSnapshot = now;
+        OnSnapshot(this.preview.Snapshot(now));
+    }
+
+    /// <summary>Verwirft Kampf, Verlaeufe und Anzeige, damit Vorschau und echte Daten sich nicht mischen.</summary>
+    private void ResetAll()
+    {
+        this.encounters.ForceReset();
+        this.rollingDamage.Reset();
+        this.rollingHealing.Reset();
+        this.rollingTaken.Reset();
+        this.liveGraph.Reset();
+        this.lastSnapshot = null;
+        this.window.SetRows([]);
+        this.window.TotalDps = 0;
+        this.window.Deaths = 0;
+        this.window.HeaderTitle = string.Empty;
     }
 
     private void OnSnapshot(CombatSnapshot snapshot)
@@ -246,60 +538,41 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void UpdateRows(CombatSnapshot snapshot, DateTime now)
     {
-        var start = this.encounters.StartedAt ?? snapshot.At;
-        var window = TimeSpan.FromSeconds(this.config.RollingWindowSeconds);
-
-        // Welcher Verlauf gilt, haengt an der Metrik; wie daraus eine Rate wird,
-        // an der eingestellten Methode. Beides ist voneinander unabhaengig.
-        var tracker = this.window.Metric switch
+        lock (this.rowsGate)
         {
-            MeterMetric.Healing => this.rollingHealing,
-            MeterMetric.DamageTaken => this.rollingTaken,
-            _ => this.rollingDamage
-        };
+            // Zeigt das Fenster einen Verlaufseintrag, gehoeren ihm die Zeilen. Die Pruefung
+            // steht im Schloss von ShowRecord, damit sich beide nicht ueberschreiben.
+            if (this.history.SelectedIndex != FightHistory.LiveIndex)
+                return;
 
-        double CurrentRate(string name) => this.config.DpsMethod == DpsMethod.Weighted
-            ? tracker.GetWeightedDps(name, now, window)
-            : tracker.GetRollingDps(name, now, window, start);
+            var totals = MeterRows.Build(
+                snapshot,
+                TrackerFor(this.window.Metric),
+                now,
+                this.encounters.StartedAt ?? snapshot.At,
+                TimeSpan.FromSeconds(this.config.ReactionSeconds),
+                this.encounters.ActiveDuration,
+                this.rowBuffer);
 
+            this.window.SetRows(this.rowBuffer);
+            this.window.HeaderTitle = snapshot.Title;
+            this.window.Deaths = totals.Deaths;
 
-        // Den Encounter-DPS selbst rechnen statt IINACTs Wert zu uebernehmen:
-        // dessen Encounter kann laenger laufen als unserer, dann bezoege sich die
-        // Spalte auf einen anderen Zeitraum als Total und aktueller DPS.
-        // Als Nenner dient die Zeit bis zum letzten Treffer, nicht die Wanduhr -
-        // sonst druecken Karenzzeit und Nachlauf den Wert unter das, was LMeter
-        // und FFLogs zeigen.
-        var seconds = Math.Max(1, this.encounters.ActiveDuration.TotalSeconds);
-
-        this.window.SetRows(snapshot.Combatants.Select(c => new MeterRow(
-            c.Name,
-            c.Job,
-            tracker.GetTotalDamage(c.Name),
-            CurrentRate(c.Name),
-            tracker.GetTotalDamage(c.Name) / seconds,
-            c.CritPercent,
-            c.DirectHitPercent,
-            c.OverhealPercent)).ToList());
-
-        this.window.HeaderTitle = snapshot.Title;
-        this.window.Deaths = snapshot.Combatants.Sum(c => c.Deaths);
-
-        // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
-        // und Summe nie Verschiedenes meinen.
-        this.window.TotalDps = this.window.Mode == DpsMode.Rolling
-            ? snapshot.Combatants.Sum(c => CurrentRate(c.Name))
-            : snapshot.Combatants.Sum(c => tracker.GetTotalDamage(c.Name)) / seconds;
+            // Kopf- und Fusszeile zeigen dieselbe Groesse wie die Spalte, damit Zeile
+            // und Summe nie Verschiedenes meinen.
+            this.window.TotalDps = totals.Sum(this.window.Mode == DpsMode.Rolling);
+        }
     }
 
     public void Dispose()
     {
         this.framework.Update -= OnFrameworkUpdate;
-        this.pluginInterface.UiBuilder.Draw -= this.window.Draw;
+        this.pluginInterface.UiBuilder.Draw -= DrawMeter;
         this.pluginInterface.UiBuilder.Draw -= this.configWindow.Draw;
         this.pluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
         this.pluginInterface.UiBuilder.OpenMainUi -= OpenMain;
         this.commandManager.RemoveHandler(CommandName);
-        this.source.SnapshotReceived -= OnSnapshot;
+        this.source.SnapshotReceived -= OnIinactSnapshot;
         this.source.Dispose();
     }
 }

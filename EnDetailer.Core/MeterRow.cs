@@ -14,7 +14,8 @@ public enum MeterMetric
 /// <summary>
 /// Eine Zeile der Anzeige. <see cref="Total"/> und die beiden Raten beziehen sich auf
 /// die gerade gewaehlte Metrik; die uebrigen Felder sind Zusatzspalten, die nur zu
-/// bestimmten Metriken passen.
+/// bestimmten Metriken passen. <see cref="Detail"/> ist der unveraenderte Datensatz des
+/// Spielers fuer den Tooltip; er wird nur durchgereicht, nicht kopiert.
 /// </summary>
 public sealed record MeterRow(
     string Name,
@@ -24,4 +25,5 @@ public sealed record MeterRow(
     double EncounterRate,
     double CritPercent,
     double DirectHitPercent,
-    double OverhealPercent);
+    double OverhealPercent,
+    CombatantSnapshot? Detail = null);

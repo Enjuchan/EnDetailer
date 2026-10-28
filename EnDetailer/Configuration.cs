@@ -1,16 +1,8 @@
 using Dalamud.Configuration;
 using Dalamud.Plugin;
+using EnDetailer.Core;
 
 namespace EnDetailer;
-
-public enum DpsMethod
-{
-    /// <summary>Harter Schnitt: die letzten N Sekunden zaehlen gleich viel.</summary>
-    FlatWindow,
-
-    /// <summary>Weiches Ausklingen: juengerer Schaden zaehlt mehr.</summary>
-    Weighted
-}
 
 public enum TextStyle
 {
@@ -38,14 +30,12 @@ public enum BarExtent
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
-    /// <summary>Wie der aktuelle DPS gewichtet wird.</summary>
-    public DpsMethod DpsMethod { get; set; } = DpsMethod.Weighted;
+    /// <summary>Mittlere Verzoegerung der Echtzeit-Rate in Sekunden.</summary>
+    public int ReactionSeconds { get; set; } = ReactionTime.DefaultSeconds;
 
-    /// <summary>Laenge des gleitenden Fensters fuer den aktuellen DPS.</summary>
-    // 25 Sekunden sind rund zehn Aktionen: eine grosse Faehigkeit hebt den Wert
-    // spuerbar, verdoppelt ihn aber nicht mehr. Im Spiel erprobt.
+    /// <summary>Nur noch zum Einlesen alter Konfigurationen (Version 1); danach ungenutzt.</summary>
     public int RollingWindowSeconds { get; set; } = 25;
 
     /// <summary>Wie lange ausserhalb des Kampfes gewartet wird, bevor er als beendet gilt.</summary>
@@ -56,8 +46,16 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Schliesst IINACTs Encounter mit, wenn unserer endet.</summary>
     public bool EndIinactEncounter { get; set; } = true;
 
-    /// <summary>Gesperrt: ohne Titelleiste, unverrueckbar, klick-durchlaessig.</summary>
+    /// <summary>Gesperrt: nur Anzeige, unverrueckbar, klick-durchlaessig.</summary>
     public bool Locked { get; set; }
+
+    /// <summary>Wann das Meter im Bild steht.</summary>
+    public ShowMode ShowMode { get; set; } = ShowMode.Always;
+
+    /// <summary>Nachlauf nach Kampfende im Modus InCombat.</summary>
+    public int ShowAfterCombatSeconds { get; set; } = 15;
+
+    public bool HideInCutscenes { get; set; }
 
     /// <summary>Deckkraft des Fensterhintergrunds.</summary>
     public float BackgroundAlpha { get; set; } = 0.55f;
@@ -73,71 +71,37 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Schriftgroesse im Meter. Balkenhoehe und Symbole skalieren mit.</summary>
     public float FontScale { get; set; } = 1.0f;
 
-    /// <summary>
-    /// Traegheit der angezeigten Zahlen in Sekunden. Die Zahl laeuft zum
-    /// berechneten Wert, statt zu springen - sie erreicht ihn immer, nur eben
-    /// einen Augenblick spaeter. Nichts wird geschaetzt oder vorweggenommen.
-    /// </summary>
-    public float ValueSmoothing { get; set; } = 2.0f;
-
-    /// <summary>
-    /// Traegheit der Balken in Sekunden. Betrifft ausschliesslich die Darstellung -
-    /// die angezeigten Zahlen bleiben unberuehrt.
-    /// </summary>
-    public float BarSmoothing { get; set; } = 0.15f;
-
-    /// <summary>
-    /// Zeigt ImGuis eigene Titelleiste. Aus wirkt das Fenster wie ein Overlay statt
-    /// wie ein Werkzeugfenster; verschoben wird dann durch Ziehen im Fenster selbst.
-    /// </summary>
-    public bool ShowTitleBar { get; set; }
-
-    /// <summary>Eckenrundung der Balken in Pixeln. 0 wirkt technischer und klarer.</summary>
-    public float BarRounding { get; set; }
-
-    /// <summary>
-    /// Akzentfarbe fuer Ueberschriften, Trennlinien und Summen. Als RGBA gespeichert,
-    /// damit sie sich im Farbwaehler bearbeiten laesst.
-    /// </summary>
-    public float[] AccentColor { get; set; } = [0.35f, 0.72f, 0.95f, 1f];
-
-    /// <summary>Feine helle Kante am Fensterrand - macht den Glaseindruck aus.</summary>
-    public bool GlassEdge { get; set; } = true;
-
-    /// <summary>Senkrechter Verlauf im Fensterhintergrund, oben etwas heller.</summary>
-    public bool GlassGradient { get; set; } = true;
-
-    /// <summary>Heller Verlauf ueber der oberen Balkenhaelfte.</summary>
-    public bool BarGloss { get; set; }
-
-    /// <summary>Aufgehellte Kante am Balkenende.</summary>
-    public bool BarGlow { get; set; }
-
     /// <summary>Akzentstreifen vor der eigenen Zeile.</summary>
     public bool HighlightSelf { get; set; } = true;
 
     /// <summary>Abwechselnd leicht abgesetzte Zeilen.</summary>
     public bool RowStripes { get; set; } = true;
 
-    /// <summary>
-    /// Ob das Rechtsklick-Menue schon einmal geoeffnet wurde. Solange nicht, steht ein
-    /// Hinweis darauf in der Fusszeile - versteckte Bedienung, die niemand findet, ist
-    /// keine Bedienung.
-    /// </summary>
-    public bool ContextMenuFound { get; set; }
+    /// <summary>Schmaler Verlauf des Echtzeitwerts der Gruppe unter dem Kopfband.</summary>
+    public bool ShowGraph { get; set; } = true;
 
     /// <summary>Blendet gemessene Werte in der Fusszeile ein. Nur zur Fehlersuche.</summary>
     public bool ShowDiagnostics { get; set; }
 
-    /// <summary>Innenabstand des Fensters und der Zellen.</summary>
-    public float Padding { get; set; } = 8f;
-
     /// <summary>Wie weit der jobfarbene Balken nach rechts reicht.</summary>
     public BarExtent BarExtent { get; set; } = BarExtent.ThroughTotal;
 
+    /// <summary>Anzeigemodus der DPS-Spalte: gleitend (Now) oder ueber den ganzen Kampf (Fight).</summary>
+    public DpsMode Mode { get; set; } = DpsMode.Rolling;
+
     private IDalamudPluginInterface? pluginInterface;
 
-    public void Initialize(IDalamudPluginInterface pi) => this.pluginInterface = pi;
+    public void Initialize(IDalamudPluginInterface pi)
+    {
+        this.pluginInterface = pi;
+
+        if (this.Version < 2)
+        {
+            this.ReactionSeconds = ReactionTime.FromWindowSeconds(this.RollingWindowSeconds);
+            this.Version = 2;
+            Save();
+        }
+    }
 
     public void Save() => this.pluginInterface?.SavePluginConfig(this);
 }

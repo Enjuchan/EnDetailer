@@ -9,4 +9,7 @@ public interface IGameConditions
     bool InCombat { get; }
     bool InCutscene { get; }
     uint ZoneId { get; }
+
+    /// <summary>In einer Instanz (Dungeon, Trial, Raid), unabhaengig vom Kampf.</summary>
+    bool InDuty { get; }
 }

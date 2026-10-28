@@ -6,7 +6,7 @@ namespace EnDetailer.Core;
 
 /// <summary>
 /// Fuehrt je Combatant einen Verlauf des kumulativen Schadens und leitet daraus
-/// den Schaden innerhalb eines gleitenden Zeitfensters ab.
+/// die Echtzeit-Rate ab.
 /// </summary>
 public sealed class RollingDpsTracker
 {
@@ -27,8 +27,8 @@ public sealed class RollingDpsTracker
         public double Cumulative => this.Baseline + this.LastCumulative;
     }
 
-    // Muss laenger sein als das laengste einstellbare Fenster, sonst fehlen dem
-    // Fenster die aelteren Messpunkte.
+    // Muss 8 tau der laengsten einstellbaren Reaktionszeit abdecken (30 s, also 120 s),
+    // sonst fehlen dem Filter die aelteren Messpunkte.
     private static readonly TimeSpan History = TimeSpan.FromSeconds(150);
     private readonly Dictionary<string, Series> series = [];
 
@@ -99,132 +99,73 @@ public sealed class RollingDpsTracker
             ? s.Samples[^1].Total
             : 0;
 
-    public double GetRollingDps(string name, DateTime now, TimeSpan window, DateTime encounterStart)
-    {
-        if (!this.series.TryGetValue(name, out var s) || s.Samples.Count == 0)
-            return 0;
-
-        var windowStart = now - window;
-
-        var baseTotal = TotalAt(s, windowStart);
-        var damageInWindow = Math.Max(0, s.Samples[^1].Total - baseTotal);
-
-        // Am Kampfanfang durch die tatsaechlich verstrichene Zeit teilen, damit der
-        // Wert nicht kuenstlich klein startet. Danach immer durch die volle
-        // Fensterlaenge, damit er ohne Schaden auf null sinkt.
-        var elapsed = now - encounterStart;
-        var divisor = elapsed < window ? elapsed : window;
-
-        // Beim ersten Datenpaket eines Kampfes ist keine Zeit verstrichen: Beginn
-        // und Messpunkt tragen denselben Zeitstempel. Ohne Untergrenze waere der
-        // Nenner null und der Wert bliebe leer. Der Schaden ist im Intervall davor
-        // entstanden, also wird mindestens dieses gerechnet.
-        if (divisor < ZeroPointLead)
-            divisor = ZeroPointLead;
-
-        return damageInWindow / divisor.TotalSeconds;
-    }
-
     /// <summary>
-    /// Zeitlich gewichteter DPS: Schaden der letzten Sekunden zaehlt voll, aelterer
-    /// klingt exponentiell aus.
+    /// Echtzeit-Rate: Antwort einer Kaskade aus zwei gleichen Exponentialstufen auf
+    /// die Schadensimpulse der Reihe. Jeder Zuwachs zwischen zwei Messpunkten wirkt
+    /// mit dem Gewicht a / tau^2 * exp(-a / tau), a ist sein Alter in Sekunden. Das
+    /// Gewicht ist bei Alter null gleich null und waechst stetig, daher springt der
+    /// Wert bei neuen Treffern nicht, und die Rate faellt ohne Schaden weich gegen
+    /// null. tau ist die halbe Reaktionszeit, weil die mittlere Verzoegerung der
+    /// Kaskade 2 * tau betraegt.
     ///
-    /// Das harte Fenster hat zwei Kanten - ein Treffer springt beim Eintreten in
-    /// den Wert hinein und beim Verlassen wieder heraus, obwohl in diesem Moment
-    /// nichts geschieht. Bei wenigen grossen Treffern, etwa langen Zaubern, ist
-    /// jeder davon als Stufe sichtbar. Hier verschwindet der Beitrag allmaehlich,
-    /// womit die zweite Kante entfaellt.
+    /// Eine Ausnahme: Der erste Zuwachs einer Reihe liegt zwischen dem Nullpunkt und
+    /// dem ersten Datenpaket und ist irgendwann in diesem Intervall entstanden. Er
+    /// wird in dessen Mitte gelegt; am Messpunkt selbst haette er das Alter null und
+    /// damit kein Gewicht, die Zeile bliebe beim ersten Paket leer. Bei den
+    /// folgenden Paketen wuerde eine solche Verschiebung den Wert bei jedem
+    /// Eintreffen springen lassen.
     ///
-    /// Es bleibt ein echter Momentanwert: Ohne neuen Schaden laufen die juengsten
-    /// Intervalle mit Rate null ein und ziehen das Ergebnis gegen null. Anders als
-    /// ein Encounter-Durchschnitt kann er also fallen.
+    /// Beliebige Auswertungszeitpunkte sind zulaessig: Messpunkte nach now zaehlen
+    /// nicht mit. Das braucht das Einfrieren zum Zeitpunkt des letzten Treffers.
     /// </summary>
-    public double GetWeightedDps(string name, DateTime now, TimeSpan window)
+    public double GetCurrentRate(string name, DateTime now, TimeSpan reaction, DateTime encounterStart)
     {
         if (!this.series.TryGetValue(name, out var s) || s.Samples.Count < 2)
             return 0;
 
-        // Zeitkonstante des Ausklingens. Die halbe Fensterlaenge trifft ungefaehr
-        // die Reaktionszeit des harten Fensters gleicher Laenge.
-        var tau = window.TotalSeconds / 2.0;
+        var tau = reaction.TotalSeconds / 2.0;
         if (tau <= 0)
             return 0;
 
-        var weightedSum = 0.0;
-        var weightTotal = 0.0;
+        // Beitraege, die aelter als 8 tau sind, liegen unter 0,3 Promille.
+        var horizon = 8 * tau;
+        var sum = 0.0;
 
-        for (var i = 1; i < s.Samples.Count; i++)
+        for (var i = s.Samples.Count - 1; i >= 1; i--)
         {
-            var previous = s.Samples[i - 1];
             var current = s.Samples[i];
+            if (current.At > now)
+                continue;
 
-            // Messpunkte nach dem Abfragezeitpunkt gehoeren nicht dazu.
-            if (previous.At >= now)
+            var previous = s.Samples[i - 1];
+            var age = (now - current.At).TotalSeconds;
+            // Der erste Zuwachs liegt in der Mitte seines Intervalls, sonst waere der
+            // Wert beim ersten Datenpaket null. Hoechstens eine halbe Sendeperiode:
+            // Taucht eine Zeile erst spaet auf (etwa "Limit Break"), ist ihr Schaden
+            // gerade erst entstanden und nicht ueber den ganzen Kampf verteilt.
+            if (i == 1)
+                age += Math.Min((current.At - previous.At).TotalSeconds, ZeroPointLead.TotalSeconds) / 2.0;
+
+            if (age > horizon)
                 break;
 
-            var span = (current.At - previous.At).TotalSeconds;
-            if (span <= 0)
-                continue;
-
-            var rate = (current.Total - previous.Total) / span;
-
-            // Gewicht nach dem Alter der Intervallmitte.
-            var age = (now - previous.At).TotalSeconds - span / 2.0;
-            if (age < 0)
-                age = 0;
-
-            var weight = Math.Exp(-age / tau) * span;
-
-            weightedSum += rate * weight;
-            weightTotal += weight;
+            var increase = current.Total - previous.Total;
+            sum += increase * (age / (tau * tau)) * Math.Exp(-age / tau);
         }
 
-        // Seit dem letzten Messpunkt vergangene Zeit zaehlt als Intervall ohne
-        // Schaden mit. Ohne das bliebe der Wert stehen, wenn nichts mehr eintrifft.
-        var idle = (now - s.Samples[^1].At).TotalSeconds;
-        if (idle > 0)
-            weightTotal += idle;
+        // Am Kampfanfang deckt der Filter erst einen Teil seiner Antwort ab, ohne
+        // Korrektur startet der Wert kuenstlich niedrig. Durch den abgedeckten Anteil
+        // statt durch die verstrichene Zeit zu teilen vermeidet den Sprung aufs
+        // Doppelte beim Opener. Jedes Paket trifft im Mittel eine halbe Sendeperiode
+        // nach dem Schaden ein, der Filter hat also entsprechend weniger abgedeckt.
+        // Untergrenze: Beim ersten Datenpaket ist keine Zeit seit Kampfbeginn
+        // verstrichen, der Nullpunkt liegt aber ZeroPointLead davor.
+        var x = Math.Max(
+            ((now - (encounterStart - ZeroPointLead)) - ZeroPointLead / 2).TotalSeconds / tau,
+            ZeroPointLead.TotalSeconds / tau);
+        var covered = 1 - Math.Exp(-x) * (1 + x);
 
-        return weightTotal <= 0 ? 0 : weightedSum / weightTotal;
-    }
-
-    /// <summary>
-    /// Aufgelaufener Schaden zu einem beliebigen Zeitpunkt, zwischen den Messpunkten
-    /// linear interpoliert.
-    ///
-    /// Die Fenstergrenze liegt fast nie genau auf einem Messpunkt. Wer stattdessen
-    /// den letzten Punkt davor nimmt, zaehlt bis zu eine Sekunde Schaden zuviel mit
-    /// und laesst den Wert bei jedem Tick springen, sobald ein Punkt herausfaellt.
-    /// Interpoliert wandert die Grenze stetig weiter - das ist zugleich genauer und
-    /// ruhiger anzusehen.
-    ///
-    /// Liegt der Zeitpunkt vor dem ersten Messpunkt, ist noch nichts aufgelaufen:
-    /// der Kampf hat innerhalb des Fensters begonnen.
-    /// </summary>
-    private static double TotalAt(Series s, DateTime at)
-    {
-        if (at <= s.Samples[0].At)
-            return 0;
-
-        if (at >= s.Samples[^1].At)
-            return s.Samples[^1].Total;
-
-        for (var i = 1; i < s.Samples.Count; i++)
-        {
-            var current = s.Samples[i];
-            if (current.At < at)
-                continue;
-
-            var previous = s.Samples[i - 1];
-            var span = (current.At - previous.At).TotalSeconds;
-            if (span <= 0)
-                return current.Total;
-
-            var ratio = (at - previous.At).TotalSeconds / span;
-            return previous.Total + (current.Total - previous.Total) * ratio;
-        }
-
-        return s.Samples[^1].Total;
+        return covered <= 0 ? 0 : sum / covered;
     }
 
     /// <summary>

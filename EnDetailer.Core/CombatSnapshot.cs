@@ -14,7 +14,17 @@ public sealed record CombatantSnapshot(
     double EncounterHps,
     double OverhealPercent,
     double TotalDamageTaken,
-    int Deaths);
+    int Deaths,
+    double CritDirectHitPercent,
+    double CritHealPercent,
+    double ShieldAmount,
+    double ParryPercent,
+    double BlockPercent,
+    double HealingTaken,
+    string MaxHitName,
+    double MaxHitValue,
+    string MaxHealName,
+    double MaxHealValue);
 
 public sealed record CombatSnapshot(
     DateTime At,

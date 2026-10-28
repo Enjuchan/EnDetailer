@@ -109,6 +109,9 @@ public sealed class IinactSource : IDisposable
                 foreach (var entry in table.Properties())
                 {
                     var c = entry.Value;
+                    var maxHitValue = c["MAXHIT"]?.ToString();
+                    var maxHealValue = c["MAXHEAL"]?.ToString();
+
                     combatants.Add(new CombatantSnapshot(
                         Name: ResolveName(c["name"]?.ToString() ?? entry.Name),
                         Job: Jobs.Parse(c["Job"]?.ToString()),
@@ -120,7 +123,17 @@ public sealed class IinactSource : IDisposable
                         EncounterHps: ParseNumber(c["enchps"]?.ToString()),
                         OverhealPercent: ParsePercent(c["OverHealPct"]?.ToString()),
                         TotalDamageTaken: ParseNumber(c["damagetaken"]?.ToString()),
-                        Deaths: (int)ParseNumber(c["deaths"]?.ToString())));
+                        Deaths: (int)ParseNumber(c["deaths"]?.ToString()),
+                        CritDirectHitPercent: ParsePercent(c["CritDirectHitPct"]?.ToString()),
+                        CritHealPercent: ParsePercent(c["critheal%"]?.ToString()),
+                        ShieldAmount: ParseNumber(c["damageShield"]?.ToString()),
+                        ParryPercent: ParsePercent(c["ParryPct"]?.ToString()),
+                        BlockPercent: ParsePercent(c["BlockPct"]?.ToString()),
+                        HealingTaken: ParseNumber(c["healstaken"]?.ToString()),
+                        MaxHitName: AbilityText.NameFrom(c["maxhit"]?.ToString(), maxHitValue),
+                        MaxHitValue: ParseNumber(maxHitValue),
+                        MaxHealName: AbilityText.NameFrom(c["maxheal"]?.ToString(), maxHealValue),
+                        MaxHealValue: ParseNumber(maxHealValue)));
                 }
             }
 
